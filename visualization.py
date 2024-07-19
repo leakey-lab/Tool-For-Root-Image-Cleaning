@@ -1,12 +1,12 @@
 import plotly.graph_objects as go
 
 
-def create_bar_graph(data):
+def create_bar_graph(data, threshold):
     # Get updated counts each time the button is clicked
     updated_counts = data
     tubes = list(updated_counts.keys())
     counts = [updated_counts[tube] for tube in tubes]
-    bar_colors = ["#ff6361" if count < 106 else "#00b1a1" for count in counts]
+    bar_colors = ["#ff6361" if count < threshold else "#00b1a1" for count in counts]
     # Create the bar chart
 
     fig = go.Figure([go.Bar(x=tubes, y=counts, marker_color=bar_colors)])
@@ -25,10 +25,10 @@ def create_bar_graph(data):
         tickmode="array",
         tickvals=list(range(0, max(counts) + 10, 10)),  # Adjust tick values as needed
         ticktext=[
-            f'<span style="color: {"red" if val <= 100 else "green"}; font-weight: bold;">{val}</span>'
+            f'<span style="color: {"red" if val <= threshold else "green"}; font-weight: bold;">{val}</span>'
             for val in range(0, max(counts) + 10, 10)
         ],
     )
     # Adding a horizontal line at y=100
-    fig.add_hline(y=100, line_color="red", line_width=3, line_dash="dash")
+    fig.add_hline(y=threshold, line_color="red", line_width=3, line_dash="dash")
     return fig
