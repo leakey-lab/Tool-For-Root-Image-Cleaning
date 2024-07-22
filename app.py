@@ -15,23 +15,61 @@ from blur_detector import (
 )
 import torch
 from flask import send_from_directory
-from werkzeug.utils import safe_join
-import shutil
 from duplicates import find_duplicates
 from scipy.stats import gaussian_kde
 import numpy as np
+import base64
+import re
 
 # Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
 
-# Directory to store blurry images
-BLURRY_IMAGES_DIR = "blurry_images"
 
-if os.path.exists(BLURRY_IMAGES_DIR):
-    shutil.rmtree(BLURRY_IMAGES_DIR)
+def encode_image(image_file):
+    encoded = base64.b64encode(open(image_file, "rb").read())
+    return "data:image/png;base64,{}".format(encoded.decode())
 
-os.makedirs(BLURRY_IMAGES_DIR)
+
+def create_image_card(image_path, index):
+    filename = os.path.basename(image_path)
+    # Extract the required part of the filename using regex
+    match = re.search(
+        r"(T\d{3})_(L\d{3})_\d{4}\.\d{2}\.\d{2}_(\d{2})(\d{2})(\d{2})", filename
+    )
+    if match:
+        tube_num = match.group(1)
+        length_num = match.group(2)
+        hour = match.group(3)
+        minute = match.group(4)
+        second = match.group(5)
+        caption = f"{tube_num}-{length_num}-{hour}:{minute}:{second}"
+    else:
+        caption = filename
+
+    return dbc.Card(
+        [
+            dbc.CardImg(src=encode_image(image_path), top=True),
+            dbc.CardBody(
+                [
+                    dbc.Checkbox(
+                        id={"type": "select-checkbox", "index": index},
+                        value=False,
+                    ),
+                    html.P(caption, className="card-text"),
+                ]
+            ),
+        ],
+        style={"width": "18rem", "display": "inline-block", "margin": "10px"},
+    )
+
+
+def create_duplicates_display(duplicate_groups):
+    children = []
+    for index, group in enumerate(duplicate_groups):
+        row = dbc.Row([create_image_card(image, index) for image in group])
+        children.append(row)
+    return children
 
 
 # Global variable to store blur scores
@@ -128,9 +166,19 @@ app.layout = html.Div(
                     className="mb-2",
                 ),
                 html.Div(id="duplicates-display"),
+                dbc.Button(
+                    "Delete Selected Images",
+                    id="delete-button",
+                    color="danger",
+                    className="mb-2",
+                ),
                 dcc.Store(id="folder-path-duplicates"),
-                dcc.Store(id="duplicates-store"),
-                html.Div(id="table-container"),
+                dcc.Store(id="duplicates-store", data=[]),
+                dcc.Loading(
+                    id="loading-duplicates-detection",
+                    type="default",
+                    children=html.Div(id="loading-output-duplicates"),
+                ),
             ],
             style={"textAlign": "center", "marginBottom": "20px"},
         ),
@@ -381,118 +429,60 @@ def serve_duplicate_image(filename):
     return send_from_directory(directory, file_to_serve)
 
 
-def create_duplicates_table(duplicates, base_path):
-    if not duplicates:
-        return "No duplicates found."
-    else:
-        table_header = [
-            html.Thead(
-                html.Tr(
-                    [
-                        html.Th("Group"),
-                        html.Th("Preview"),
-                        html.Th("Action"),
-                    ]
-                )
-            )
-        ]
-        rows = []
-        for idx, group in enumerate(duplicates):
-            images = []
-            for file_path in group:
-                filename = os.path.basename(file_path)
-                # Use safe_join to create the path for the image source.
-                safe_image_path = safe_join(base_path, filename)
-                if safe_image_path:
-                    image_src = f"/dup_images/{safe_image_path.replace(os.sep, '/')}"
-                    image_html = html.Figure(
-                        [
-                            html.Img(
-                                src=image_src,
-                                style={"height": "100px", "padding": "5px"},
-                            ),
-                            html.Figcaption(("-").join(filename.split("_")[1:5])),
-                        ]
-                    )
-                    images.append(image_html)
-
-            delete_button = dbc.Button(
-                "Delete",
-                id={"type": "delete-button", "index": idx},
-                color="danger",
-                className="ms-1",
-                n_clicks=0,
-            )
-            rows.append(
-                html.Tr(
-                    [
-                        html.Td(str(idx + 1)),
-                        html.Td(images),
-                        html.Td(delete_button),
-                    ]
-                )
-            )
-
-        table_body = [html.Tbody(rows)]
-        return dbc.Table(
-            table_header + table_body, bordered=True, responsive=True, hover=True
-        )
-
-
 @app.callback(
     Output("folder-path-duplicates", "data"),
     [Input("select-folder-duplicates", "n_clicks")],
 )
 def update_folder_path(n_clicks):
-    if n_clicks:
-        return select_folder()
+    if n_clicks is None:
+        raise dash.exceptions.PreventUpdate
+    return select_folder()
 
 
 @app.callback(
-    Output("duplicates-display", "children"), [Input("folder-path-duplicates", "data")]
-)
-def detect_duplicates(folder_path):
-    if folder_path:
-        duplicates = find_duplicates(folder_path)
-        return create_duplicates_table(duplicates, folder_path)
-    return "No duplicates found."
-
-
-@app.callback(
-    Output("duplicates-store", "data"),
-    Input({"type": "delete-button", "index": ALL}, "n_clicks"),
+    [Output("duplicates-store", "data"), Output("duplicates-display", "children")],
+    [Input("folder-path-duplicates", "data"), Input("delete-button", "n_clicks")],
     [
-        State({"type": "delete-button", "index": ALL}, "id"),
         State("duplicates-store", "data"),
+        State({"type": "select-checkbox", "index": ALL}, "value"),
     ],
 )
-def delete_image(n_clicks, ids, duplicates):
+def update_duplicates_display(
+    folder_path, delete_n_clicks, duplicates, selected_values
+):
     ctx = dash.callback_context
-    if ctx.triggered:
-        button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        idx = eval(button_id)["index"]
-        group = duplicates[idx]  # Get the group of duplicates
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
 
-        # Perform deletion
-        try:
-            for file_path in group:
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if button_id == "folder-path-duplicates":
+        duplicates = find_duplicates(folder_path)
+        return duplicates, create_duplicates_display(duplicates)
+
+    elif button_id == "delete-button":
+        # Assuming selected_values is a flat list of booleans corresponding to the checkboxes
+        flattened_duplicates = [img for group in duplicates for img in group]
+        selected_files = [
+            img
+            for img, selected in zip(flattened_duplicates, selected_values)
+            if selected
+        ]
+
+        for file_path in selected_files:
+            try:
                 os.remove(file_path)
-            # Remove the deleted group from the duplicates list
-            updated_duplicates = [d for i, d in enumerate(duplicates) if i != idx]
-            return updated_duplicates
-        except OSError as e:
-            print(f"Error deleting file {file_path}: {e}")
+            except OSError as e:
+                print(f"Error deleting file {file_path}: {e}")
+
+        updated_duplicates = [
+            [img for img in group if img not in selected_files] for group in duplicates
+        ]
+        updated_duplicates = [group for group in updated_duplicates if group]
+
+        return updated_duplicates, create_duplicates_display(updated_duplicates)
 
     return dash.no_update
-
-
-@app.callback(Output("table-container", "children"), Input("duplicates-store", "data"))
-def update_table(duplicates):
-    if duplicates:
-        return create_duplicates_table(
-            duplicates, "path/to/base"
-        )  # Adjust path as needed
-    return "No duplicates found."
 
 
 if __name__ == "__main__":

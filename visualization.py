@@ -4,7 +4,8 @@ import plotly.graph_objects as go
 def create_bar_graph(data, threshold):
     # Get updated counts each time the button is clicked
     updated_counts = data
-    tubes = list(updated_counts.keys())
+    # Sort tubes by their numbers (assuming tube numbers are strings that can be converted to integers)
+    tubes = sorted(updated_counts.keys(), key=lambda x: int(x))
     counts = [updated_counts[tube] for tube in tubes]
     bar_colors = ["#ff6361" if count < threshold else "#00b1a1" for count in counts]
     # Create the bar chart
