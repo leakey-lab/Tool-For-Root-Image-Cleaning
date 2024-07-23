@@ -1,0 +1,38 @@
+.checkbox-container {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+}
+.custom-checkbox {
+    display: none;
+}
+.custom-checkbox-label {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    background-color: #fff;
+    border: 2px solid #007bff;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.custom-checkbox:checked + .custom-checkbox-label {
+    background-color: #007bff;
+}
+.custom-checkbox:checked + .custom-checkbox-label::after {
+    content: '\2714';
+    color: #fff;
+    position: absolute;
+    top: 0;
+    left: 4px;
+}
+
+.hover-card {
+    transition: transform 0.2s, box-shadow 0.2s;
+    border-radius: 8px;
+}
+
+.hover-card:hover {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    transform: translateY(-5px);
+    background-color: #f8f9fa;  /* Change this to your desired hover color */
+}
