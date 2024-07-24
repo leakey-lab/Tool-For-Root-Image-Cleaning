@@ -36,3 +36,34 @@
     transform: translateY(-5px);
     background-color: #f8f9fa;  /* Change this to your desired hover color */
 }
+
+
+.hover-for-blur {
+    position: relative;
+    overflow: hidden;
+}
+
+.hover-for-blur .thumbnail {
+    display: block;
+    transition: transform 0.3s ease;
+}
+
+.hover-for-blur .preview {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    max-width: 80vw;
+    max-height: 80vh;
+    z-index: 1000;
+    transition: transform 0.3s ease;
+    pointer-events: none;
+}
+
+.hover-for-blur:hover .thumbnail {
+    transform: scale(1.05);
+}
+
+.hover-for-blur:hover .preview {
+    transform: translate(-50%, -50%) scale(1);
+}
