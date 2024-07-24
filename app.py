@@ -1,13 +1,19 @@
 import dash
-from dash import html, dcc
-from dash.dependencies import Input, Output, State, ALL
+from dash import html, dcc, clientside_callback
+from dash.dependencies import Input, Output, State, ALL, MATCH
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from directory_selector import select_folder
 from data_processor import process_images
 from visualization import create_bar_graph
 import os
-from utils import handle_blurry_deletion, handle_blur_detection, fetch_and_check_blurry
+from shutil import copyfile
+from blur_detector import (
+    LaplacianBlurDetector,
+    compute_and_store_blur_scores,
+    calculate_global_statistics,
+)
+import torch
 from flask import send_from_directory
 from duplicates import find_duplicates
 from scipy.stats import gaussian_kde
@@ -137,20 +143,12 @@ app.layout = html.Div(
                     style={"textAlign": "center", "margin": "auto", "width": "50%"},
                 ),
                 html.Div(id="blurry-images-display"),
-                dbc.Button(
-                    "Delete Selected Blurry Images",
-                    id="delete-blurry-button",
-                    color="danger",
-                    className="mt-3",
-                    style={"display": "none"},
-                ),
                 dcc.Store(id="folder-path"),
                 dcc.Store(
                     id="blur-detection-state",
                     data={"running": False, "completed": False, "progress": 0},
                 ),
                 dcc.Store(id="blurred-images", data=[]),
-                dcc.Store(id="filtered-blurry-images", data=[]),
                 dcc.Loading(
                     id="loading-blur-detection",
                     type="default",
@@ -219,6 +217,86 @@ def update_graph(folder_path, threshold):
 def select_folder_for_blur(n_clicks):
     folder_path = select_folder()
     return {"path": folder_path}
+
+
+detector = LaplacianBlurDetector().eval()
+if torch.cuda.is_available():
+    detector = detector.cuda()
+
+
+def fetch_and_check_blurry(
+    image_path, blur_threshold, blur_scores, mean_blur, std_blur
+):
+
+    blur_score = blur_scores.get(os.path.normpath(image_path))
+    lower_bound = mean_blur - blur_threshold * std_blur
+    is_blurry = blur_score < lower_bound
+    if is_blurry:
+        return image_path, blur_score
+    return None
+
+
+@app.callback(
+    [
+        Output("blur-detection-state", "data"),
+        Output("blurred-images", "data"),
+        Output("loading-output", "children"),
+        Output("global-blur-stats", "data"),
+    ],
+    [Input("folder-path", "data"), Input("select-folder-blur", "n_clicks")],
+    [State("blur-detection-state", "data"), State("blurred-images", "data")],
+)
+def detect_blurry_images(data, n_clicks, blur_detection_state, blurred_images):
+    ctx = dash.callback_context
+
+    if not data or "path" not in data:
+        return blur_detection_state, blurred_images, "", None
+
+    folder_path = data["path"]
+
+    # If the blur detection button is clicked, reset the state and images
+    if ctx.triggered and "select-folder-blur.n_clicks" in ctx.triggered[0]["prop_id"]:
+        blur_detection_state = {"running": True, "completed": False, "progress": 0}
+        blurred_images = []
+
+    if not blur_detection_state["running"]:
+        return blur_detection_state, blurred_images, "", None
+
+    total_files = [
+        os.path.join(folder_path, f)
+        for f in os.listdir(folder_path)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    ]
+    file_count = len(total_files)
+
+    # Check if processing is already completed
+    if blur_detection_state["completed"]:
+        return blur_detection_state, blurred_images, "", None
+
+    new_blurred_images = []
+    blur_val = []
+    blur_scores_global = compute_and_store_blur_scores(total_files, detector)
+    mean_blur_global, std_blur_global = calculate_global_statistics(blur_scores_global)
+    for i, file_path in enumerate(total_files):  # Process only the first 1500 images
+        result = fetch_and_check_blurry(
+            file_path, 1, blur_scores_global, mean_blur_global, std_blur_global
+        )
+        if result is not None:
+            # new_file_path = os.path.join(BLURRY_IMAGES_DIR, result[0])
+            # copyfile(file_path, new_file_path)
+            new_blurred_images.append(file_path)
+            blur_val.append(result[1])
+
+        # Update progress
+        blur_detection_state["progress"] = int(((i + 1) / file_count) * 100)
+
+    blur_detection_state["completed"] = True  # Mark as completed
+    blur_stats_data = {
+        "blur_scores": blur_scores_global,
+        "mean_blur": mean_blur_global,
+        "std_blur": std_blur_global,
+    }
+    return blur_detection_state, [new_blurred_images, blur_val], "", blur_stats_data
 
 
 @app.callback(
@@ -290,18 +368,15 @@ def display_blur_distribution(blur_stats_data, blur_threshold):
 
 @app.callback(
     Output("blurry-images-display", "children"),
-    Output("delete-blurry-button", "style"),
-    Output("filtered-blurry-images", "data"),
-    [
-        Input("blurred-images", "data"),
-        Input("blur-threshold-slider", "value"),
-        Input("global-blur-stats", "data"),
-    ],
+    Input("blurred-images", "data"),
+    Input("blur-threshold-slider", "value"),
+    Input("global-blur-stats", "data"),
 )
 def display_blurry_images(blurred_images, blur_threshold, blur_stats):
     if not blurred_images:
-        return html.Div("No blurry images found."), {"display": "none"}, []
+        return ["No blurry images found."]
 
+    # Use the blur_stats data
     blur_scores_global = blur_stats["blur_scores"]
     mean_blur_global = blur_stats["mean_blur"]
     std_blur_global = blur_stats["std_blur"]
@@ -315,123 +390,27 @@ def display_blurry_images(blurred_images, blur_threshold, blur_stats):
         if result is not None:
             filtered_images.append(result[0])
             blur_val.append(result[1])
-
-    return (
-        html.Div(
-            [
-                html.Div(
-                    style={
-                        "display": "grid",
-                        "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
-                        "gap": "10px",
-                    },
-                    children=[
-                        html.Div(
-                            [
-                                dcc.Checklist(
-                                    id={"type": "blurry-checkbox", "index": i},
-                                    options=[{"label": "", "value": "checked"}],
-                                    value=[],
-                                    style={
-                                        "position": "absolute",
-                                        "top": "5px",
-                                        "left": "5px",
-                                    },
-                                ),
-                                html.Img(
-                                    src=f"/images/{image}",
-                                    style={"height": "200px", "padding": "5px"},
-                                ),
-                                html.Figcaption(f"Blur Val = {bval:.2f}"),
-                            ],
-                            style={"textAlign": "center", "position": "relative"},
-                        )
-                        for i, (image, bval) in enumerate(
-                            zip(filtered_images, blur_val)
-                        )
-                    ],
-                ),
-                html.Div(
-                    [
-                        dbc.Button(
-                            "Delete Selected Blurry Images",
-                            id="delete-blurry-button",
-                            color="danger",
-                            className="mt-3",
-                        )
-                    ],
-                    style={"textAlign": "center", "marginTop": "20px"},
-                ),
-            ]
-        ),
-        {"display": "block"},
-        filtered_images,
-    )
-
-
-@app.callback(
-    [
-        Output("blur-detection-state", "data"),
-        Output("blurred-images", "data"),
-        Output("loading-output", "children"),
-        Output("global-blur-stats", "data"),
-    ],
-    [
-        Input("folder-path", "data"),
-        Input("select-folder-blur", "n_clicks"),
-        Input("delete-blurry-button", "n_clicks"),
-    ],
-    [
-        State("blur-detection-state", "data"),
-        State("blurred-images", "data"),
-        State({"type": "blurry-checkbox", "index": ALL}, "value"),
-        State("global-blur-stats", "data"),
-        State("filtered-blurry-images", "data"),
-    ],
-)
-def handle_blur_detection_and_deletion(
-    folder_data,
-    select_n_clicks,
-    delete_n_clicks,
-    blur_detection_state,
-    blurred_images,
-    selected_values,
-    global_blur_stats,
-    filtered_blurry_images,
-):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        raise exceptions.PreventUpdate
-
-    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-
-    if trigger_id in {"folder-path", "select-folder-blur"}:
-        blur_detection_state, blurred_images, progress, blur_stats = (
-            handle_blur_detection(folder_data, blur_detection_state, blurred_images)
-        )
-        return (
-            blur_detection_state,
-            blurred_images,
-            f"Progress: {progress}%",
-            blur_stats,
-        )
-    elif trigger_id == "delete-blurry-button":
-        blur_detection_state, updated_blurred_images, _, updated_blur_stats = (
-            handle_blurry_deletion(
-                filtered_blurry_images,
-                selected_values,
-                global_blur_stats,
-                blur_detection_state,
+    # Create image elements for display in a grid
+    return html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
+            "gap": "10px",
+        },
+        children=[
+            html.Div(
+                [
+                    html.Img(
+                        src=f"/images/{image}",
+                        style={"height": "200px", "padding": "5px"},
+                    ),
+                    html.Figcaption(f"Blur Val = {bval}"),
+                ],
+                style={"textAlign": "center"},
             )
-        )
-        return (
-            blur_detection_state,
-            updated_blurred_images,
-            "Deletion completed",
-            updated_blur_stats,
-        )
-
-    return no_update, no_update, "", no_update
+            for image, bval in zip(filtered_images, blur_val)
+        ],
+    )
 
 
 # Route to serve images
