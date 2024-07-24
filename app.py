@@ -50,58 +50,42 @@ def encode_image(image_file):
 
 def create_image_card(image_path, index):
     filename = os.path.basename(image_path)
+    # Extract the required part of the filename using regex
     match = re.search(
         r"(T\d{3})_(L\d{3})_\d{4}\.\d{2}\.\d{2}_(\d{2})(\d{2})(\d{2})", filename
     )
     if match:
-        tube_num, length_num, hour, minute, second = match.groups()
+        tube_num = match.group(1)
+        length_num = match.group(2)
+        hour = match.group(3)
+        minute = match.group(4)
+        second = match.group(5)
         caption = f"{tube_num}-{length_num}-{hour}:{minute}:{second}"
     else:
         caption = filename
 
-    return html.Div(
+    return dbc.Card(
         [
-            dbc.Card(
+            dbc.CardImg(src=encode_image(image_path), top=True),
+            dbc.CardBody(
                 [
-                    dbc.CardImg(src=encode_image(image_path), top=True),
-                    dbc.CardBody(
-                        [
-                            dcc.Checklist(
-                                id={"type": "select-checkbox", "index": index},
-                                options=[{"label": "", "value": "checked"}],
-                                value=[],
-                                className="position-absolute top-0 start-0 m-2",
-                            ),
-                            html.P(caption, className="card-text"),
-                        ]
+                    dbc.Checkbox(
+                        id={"type": "select-checkbox", "index": index},
+                        value=False,
                     ),
-                ],
-                style={"width": "18rem", "margin": "1px"},
-            )
+                    html.P(caption, className="card-text"),
+                ]
+            ),
         ],
-        id={"type": "card", "index": index},
-        n_clicks=0,
-        style={"cursor": "pointer", "width": "auto"},
-        className="hover-card",
+        style={"width": "18rem", "display": "inline-block", "margin": "10px"},
     )
 
 
 def create_duplicates_display(duplicate_groups):
     children = []
-    for group_index, group in enumerate(duplicate_groups):
-        group_cards = []
-        for img_index, image in enumerate(group):
-            group_cards.append(create_image_card(image, f"{group_index}-{img_index}"))
-
-        # Combine cards directly into a single dbc.Row
-        children.append(
-            dbc.Row(
-                group_cards,
-                className="mb-4",
-                style={"flex-wrap": "wrap"},
-                justify="center",
-            )
-        )
+    for index, group in enumerate(duplicate_groups):
+        row = dbc.Row([create_image_card(image, index) for image in group])
+        children.append(row)
     return children
 
 
@@ -183,20 +167,12 @@ app.layout = html.Div(
                     style={"textAlign": "center", "margin": "auto", "width": "50%"},
                 ),
                 html.Div(id="blurry-images-display"),
-                dbc.Button(
-                    "Delete Selected Blurry Images",
-                    id="delete-blurry-button",
-                    color="danger",
-                    className="mt-3",
-                    style={"display": "none"},
-                ),
                 dcc.Store(id="folder-path"),
                 dcc.Store(
                     id="blur-detection-state",
                     data={"running": False, "completed": False, "progress": 0},
                 ),
                 dcc.Store(id="blurred-images", data=[]),
-                dcc.Store(id="filtered-blurry-images", data=[]),
                 dcc.Loading(
                     id="loading-blur-detection",
                     type="default",
@@ -265,6 +241,86 @@ def update_graph(folder_path, threshold):
 def select_folder_for_blur(n_clicks):
     folder_path = select_folder()
     return {"path": folder_path}
+
+
+detector = LaplacianBlurDetector().eval()
+if torch.cuda.is_available():
+    detector = detector.cuda()
+
+
+def fetch_and_check_blurry(
+    image_path, blur_threshold, blur_scores, mean_blur, std_blur
+):
+
+    blur_score = blur_scores.get(os.path.normpath(image_path))
+    lower_bound = mean_blur - blur_threshold * std_blur
+    is_blurry = blur_score < lower_bound
+    if is_blurry:
+        return image_path, blur_score
+    return None
+
+
+@app.callback(
+    [
+        Output("blur-detection-state", "data"),
+        Output("blurred-images", "data"),
+        Output("loading-output", "children"),
+        Output("global-blur-stats", "data"),
+    ],
+    [Input("folder-path", "data"), Input("select-folder-blur", "n_clicks")],
+    [State("blur-detection-state", "data"), State("blurred-images", "data")],
+)
+def detect_blurry_images(data, n_clicks, blur_detection_state, blurred_images):
+    ctx = dash.callback_context
+
+    if not data or "path" not in data:
+        return blur_detection_state, blurred_images, "", None
+
+    folder_path = data["path"]
+
+    # If the blur detection button is clicked, reset the state and images
+    if ctx.triggered and "select-folder-blur.n_clicks" in ctx.triggered[0]["prop_id"]:
+        blur_detection_state = {"running": True, "completed": False, "progress": 0}
+        blurred_images = []
+
+    if not blur_detection_state["running"]:
+        return blur_detection_state, blurred_images, "", None
+
+    total_files = [
+        os.path.join(folder_path, f)
+        for f in os.listdir(folder_path)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    ]
+    file_count = len(total_files)
+
+    # Check if processing is already completed
+    if blur_detection_state["completed"]:
+        return blur_detection_state, blurred_images, "", None
+
+    new_blurred_images = []
+    blur_val = []
+    blur_scores_global = compute_and_store_blur_scores(total_files, detector)
+    mean_blur_global, std_blur_global = calculate_global_statistics(blur_scores_global)
+    for i, file_path in enumerate(total_files):  # Process only the first 1500 images
+        result = fetch_and_check_blurry(
+            file_path, 1, blur_scores_global, mean_blur_global, std_blur_global
+        )
+        if result is not None:
+            # new_file_path = os.path.join(BLURRY_IMAGES_DIR, result[0])
+            # copyfile(file_path, new_file_path)
+            new_blurred_images.append(file_path)
+            blur_val.append(result[1])
+
+        # Update progress
+        blur_detection_state["progress"] = int(((i + 1) / file_count) * 100)
+
+    blur_detection_state["completed"] = True  # Mark as completed
+    blur_stats_data = {
+        "blur_scores": blur_scores_global,
+        "mean_blur": mean_blur_global,
+        "std_blur": std_blur_global,
+    }
+    return blur_detection_state, [new_blurred_images, blur_val], "", blur_stats_data
 
 
 @app.callback(
@@ -352,18 +408,15 @@ app.clientside_callback(
 
 @app.callback(
     Output("blurry-images-display", "children"),
-    Output("delete-blurry-button", "style"),
-    Output("filtered-blurry-images", "data"),
-    [
-        Input("blurred-images", "data"),
-        Input("blur-threshold-slider", "value"),
-        Input("global-blur-stats", "data"),
-    ],
+    Input("blurred-images", "data"),
+    Input("blur-threshold-slider", "value"),
+    Input("global-blur-stats", "data"),
 )
 def display_blurry_images(blurred_images, blur_threshold, blur_stats):
     if not blurred_images:
-        return html.Div("No blurry images found."), {"display": "none"}, []
+        return ["No blurry images found."]
 
+    # Use the blur_stats data
     blur_scores_global = blur_stats["blur_scores"]
     mean_blur_global = blur_stats["mean_blur"]
     std_blur_global = blur_stats["std_blur"]
@@ -643,24 +696,6 @@ def update_folder_path(n_clicks):
     return select_folder()
 
 
-# Define clientside callback for toggling checkbox
-app.clientside_callback(
-    """
-    function(n_clicks, current_value, index) {
-        if (n_clicks === null || n_clicks === 0) {
-            return dash_clientside.no_update;
-        }
-        const newValue = current_value.length === 0 ? ['checked'] : [];
-        return newValue;
-    }
-    """,
-    Output({"type": "select-checkbox", "index": MATCH}, "value"),
-    Input({"type": "card", "index": MATCH}, "n_clicks"),
-    State({"type": "select-checkbox", "index": MATCH}, "value"),
-    State({"type": "card", "index": MATCH}, "id"),
-)
-
-
 @app.callback(
     [Output("duplicates-store", "data"), Output("duplicates-display", "children")],
     [Input("folder-path-duplicates", "data"), Input("delete-button", "n_clicks")],
@@ -683,6 +718,7 @@ def update_duplicates_display(
         return duplicates, create_duplicates_display(duplicates)
 
     elif button_id == "delete-button":
+        # Assuming selected_values is a flat list of booleans corresponding to the checkboxes
         flattened_duplicates = [img for group in duplicates for img in group]
         selected_files = [
             img
