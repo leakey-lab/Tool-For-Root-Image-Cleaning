@@ -1,6 +1,6 @@
 import dash
-from dash import html, dcc, clientside_callback, no_update, exceptions
-from dash.dependencies import Input, Output, State, ALL, MATCH
+from dash import html, dcc
+from dash.dependencies import Input, Output, State, ALL
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from directory_selector import select_folder
@@ -16,9 +16,7 @@ import base64
 import re
 
 # Initialize the Dash app
-app = dash.Dash(
-    __name__, external_stylesheets=[dbc.themes.BOOTSTRAP, "./assets/style.css"]
-)
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
 
 
@@ -29,58 +27,42 @@ def encode_image(image_file):
 
 def create_image_card(image_path, index):
     filename = os.path.basename(image_path)
+    # Extract the required part of the filename using regex
     match = re.search(
         r"(T\d{3})_(L\d{3})_\d{4}\.\d{2}\.\d{2}_(\d{2})(\d{2})(\d{2})", filename
     )
     if match:
-        tube_num, length_num, hour, minute, second = match.groups()
+        tube_num = match.group(1)
+        length_num = match.group(2)
+        hour = match.group(3)
+        minute = match.group(4)
+        second = match.group(5)
         caption = f"{tube_num}-{length_num}-{hour}:{minute}:{second}"
     else:
         caption = filename
 
-    return html.Div(
+    return dbc.Card(
         [
-            dbc.Card(
+            dbc.CardImg(src=encode_image(image_path), top=True),
+            dbc.CardBody(
                 [
-                    dbc.CardImg(src=encode_image(image_path), top=True),
-                    dbc.CardBody(
-                        [
-                            dcc.Checklist(
-                                id={"type": "select-checkbox", "index": index},
-                                options=[{"label": "", "value": "checked"}],
-                                value=[],
-                                className="position-absolute top-0 start-0 m-2",
-                            ),
-                            html.P(caption, className="card-text"),
-                        ]
+                    dbc.Checkbox(
+                        id={"type": "select-checkbox", "index": index},
+                        value=False,
                     ),
-                ],
-                style={"width": "18rem", "margin": "1px"},
-            )
+                    html.P(caption, className="card-text"),
+                ]
+            ),
         ],
-        id={"type": "card", "index": index},
-        n_clicks=0,
-        style={"cursor": "pointer", "width": "auto"},
-        className="hover-card",
+        style={"width": "18rem", "display": "inline-block", "margin": "10px"},
     )
 
 
 def create_duplicates_display(duplicate_groups):
     children = []
-    for group_index, group in enumerate(duplicate_groups):
-        group_cards = []
-        for img_index, image in enumerate(group):
-            group_cards.append(create_image_card(image, f"{group_index}-{img_index}"))
-
-        # Combine cards directly into a single dbc.Row
-        children.append(
-            dbc.Row(
-                group_cards,
-                className="mb-4",
-                style={"flex-wrap": "wrap"},
-                justify="center",
-            )
-        )
+    for index, group in enumerate(duplicate_groups):
+        row = dbc.Row([create_image_card(image, index) for image in group])
+        children.append(row)
     return children
 
 
@@ -478,24 +460,6 @@ def update_folder_path(n_clicks):
     return select_folder()
 
 
-# Define clientside callback for toggling checkbox
-app.clientside_callback(
-    """
-    function(n_clicks, current_value, index) {
-        if (n_clicks === null || n_clicks === 0) {
-            return dash_clientside.no_update;
-        }
-        const newValue = current_value.length === 0 ? ['checked'] : [];
-        return newValue;
-    }
-    """,
-    Output({"type": "select-checkbox", "index": MATCH}, "value"),
-    Input({"type": "card", "index": MATCH}, "n_clicks"),
-    State({"type": "select-checkbox", "index": MATCH}, "value"),
-    State({"type": "card", "index": MATCH}, "id"),
-)
-
-
 @app.callback(
     [Output("duplicates-store", "data"), Output("duplicates-display", "children")],
     [Input("folder-path-duplicates", "data"), Input("delete-button", "n_clicks")],
@@ -518,6 +482,7 @@ def update_duplicates_display(
         return duplicates, create_duplicates_display(duplicates)
 
     elif button_id == "delete-button":
+        # Assuming selected_values is a flat list of booleans corresponding to the checkboxes
         flattened_duplicates = [img for group in duplicates for img in group]
         selected_files = [
             img
