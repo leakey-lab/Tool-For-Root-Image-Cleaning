@@ -63,7 +63,7 @@ def create_image_card(image_path, index):
         [
             dbc.Card(
                 [
-                    dbc.CardImg(src=encode_image(image_path), top=True),
+                    dbc.CardImg(src=f"/dup_images/{image_path}", top=True),
                     dbc.CardBody(
                         [
                             dcc.Checklist(
@@ -86,23 +86,42 @@ def create_image_card(image_path, index):
     )
 
 
-def create_duplicates_display(duplicate_groups):
+def create_duplicates_display(duplicate_groups, page, items_per_page):
     children = []
-    for group_index, group in enumerate(duplicate_groups):
-        group_cards = []
-        for img_index, image in enumerate(group):
-            group_cards.append(create_image_card(image, f"{group_index}-{img_index}"))
+    start_idx = (page - 1) * items_per_page
+    end_idx = start_idx + items_per_page
 
-        # Combine cards directly into a single dbc.Row
-        children.append(
-            dbc.Row(
-                group_cards,
-                className="mb-4",
-                style={"flex-wrap": "wrap"},
-                justify="center",
-            )
+    # Filter groups to only include those with more than one image
+    filtered_groups = [group for group in duplicate_groups if len(group) > 1]
+
+    # Calculate total groups and determine which groups to display on the current page
+    total_groups = len(filtered_groups)
+    groups_to_display = filtered_groups[start_idx:end_idx]
+
+    global_index = sum(len(group) for group in filtered_groups[:start_idx])
+    current_page_images = []
+
+    for group in groups_to_display:
+        group_cards = []
+        for image in group:
+            group_cards.append(create_image_card(image, global_index))
+            global_index += 1
+            current_page_images.append(image)
+
+        # Create a row for each group
+        group_row = dbc.Row(
+            group_cards,
+            className="mb-4",
+            style={
+                "display": "flex",
+                "justifyContent": "center",
+                "alignItems": "center",
+            },
         )
-    return children
+        children.append(group_row)
+
+    display = html.Div(children)
+    return display, current_page_images
 
 
 def fetch_and_check_blurry(
@@ -182,6 +201,50 @@ app.layout = html.Div(
                     ],
                     style={"textAlign": "center", "margin": "auto", "width": "50%"},
                 ),
+                html.Div(
+                    [
+                        html.Label("Items per page:", className="me-2"),
+                        dcc.Dropdown(
+                            id="items-per-page",
+                            options=[
+                                {"label": str(i), "value": i} for i in [10, 20, 30, 50]
+                            ],
+                            value=20,
+                            style={"width": "100px"},
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "marginTop": "20px",
+                        "marginBottom": "20px",
+                    },
+                ),
+                html.Div(
+                    id="high-load-warning",
+                    style={
+                        "color": "orange",
+                        "fontWeight": "bold",
+                        "marginBottom": "10px",
+                        "textAlign": "center",
+                        "display": "none",
+                    },
+                ),
+                dbc.Pagination(
+                    id="pagination",
+                    active_page=1,
+                    max_value=1,
+                    first_last=True,
+                    previous_next=True,
+                    fully_expanded=False,
+                    style={
+                        "justifyContent": "center",
+                        "overflowX": "auto",  # Allows horizontal scrolling if needed
+                        "whiteSpace": "nowrap",  # Prevents wrapping of pagination items
+                        "padding": "10px 0px",  # Add some vertical padding
+                    },
+                ),
                 html.Div(id="blurry-images-display"),
                 dbc.Button(
                     "Delete Selected Blurry Images",
@@ -213,6 +276,41 @@ app.layout = html.Div(
                     id="select-folder-duplicates",
                     className="mb-2",
                 ),
+                html.Div(
+                    [
+                        html.Label("Items per page:", className="me-2"),
+                        dcc.Dropdown(
+                            id="duplicates-items-per-page",
+                            options=[
+                                {"label": str(i), "value": i}
+                                for i in [5, 10, 20, 30, 50]
+                            ],
+                            value=20,
+                            style={"width": "100px"},
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "marginTop": "20px",
+                        "marginBottom": "20px",
+                    },
+                ),
+                dbc.Pagination(
+                    id="duplicates-pagination",
+                    active_page=1,
+                    max_value=1,
+                    first_last=True,
+                    previous_next=True,
+                    fully_expanded=False,
+                    style={
+                        "justifyContent": "center",
+                        "overflowX": "auto",
+                        "whiteSpace": "nowrap",
+                        "padding": "10px 0",
+                    },
+                ),
                 html.Div(id="duplicates-display"),
                 dbc.Button(
                     "Delete Selected Images",
@@ -222,17 +320,26 @@ app.layout = html.Div(
                 ),
                 dcc.Store(id="folder-path-duplicates"),
                 dcc.Store(id="duplicates-store", data=[]),
+                dcc.Store(id="filtered-duplicates", data=[]),
                 dcc.Loading(
                     id="loading-duplicates-detection",
                     type="default",
                     children=html.Div(id="loading-output-duplicates"),
                 ),
+                dcc.Store(id="current-page-images", storage_type="memory"),
             ],
             style={"textAlign": "center", "marginBottom": "20px"},
         ),
-    ],
-    style={"margin": "20px"},
+    ]
 )
+
+
+@app.server.route("/dup_images/<path:filename>")
+def serve_duplicate_image(filename):
+    # Ensure the directory is safely parsed
+    directory = os.path.dirname(filename)
+    file_to_serve = os.path.basename(filename)
+    return send_from_directory(directory, file_to_serve)
 
 
 @app.callback(
@@ -351,18 +458,42 @@ app.clientside_callback(
 
 
 @app.callback(
+    Output("high-load-warning", "children"),
+    Output("high-load-warning", "style"),
+    Input("items-per-page", "value"),
+)
+def update_warning(items_per_page):
+    if items_per_page == 50:
+        return (
+            "Warning: Displaying 50 images may slow down the system.",
+            {
+                "color": "orange",
+                "fontWeight": "bold",
+                "marginBottom": "10px",
+                "textAlign": "center",
+                "display": "block",
+            },
+        )
+    else:
+        return "", {"display": "none"}
+
+
+@app.callback(
     Output("blurry-images-display", "children"),
     Output("delete-blurry-button", "style"),
     Output("filtered-blurry-images", "data"),
-    [
-        Input("blurred-images", "data"),
-        Input("blur-threshold-slider", "value"),
-        Input("global-blur-stats", "data"),
-    ],
+    Output("pagination", "max_value"),
+    Input("blurred-images", "data"),
+    Input("blur-threshold-slider", "value"),
+    Input("global-blur-stats", "data"),
+    Input("pagination", "active_page"),
+    Input("items-per-page", "value"),
 )
-def display_blurry_images(blurred_images, blur_threshold, blur_stats):
+def display_blurry_images(
+    blurred_images, blur_threshold, blur_stats, page, items_per_page
+):
     if not blurred_images:
-        return html.Div("No blurry images found."), {"display": "none"}, []
+        return html.Div("No blurry images found."), {"display": "none"}, [], 1
 
     blur_scores_global = blur_stats["blur_scores"]
     mean_blur_global = blur_stats["mean_blur"]
@@ -382,58 +513,66 @@ def display_blurry_images(blurred_images, blur_threshold, blur_stats):
     sorted_images = sorted(zip(filtered_images, blur_val), key=lambda x: x[1])
     filtered_images, blur_val = zip(*sorted_images) if sorted_images else ([], [])
 
+    # Pagination
+    total_images = len(filtered_images)
+    total_pages = -(-total_images // items_per_page)  # Ceiling division
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, total_images)
+    page_images = filtered_images[start_idx:end_idx]
+    page_blur_val = blur_val[start_idx:end_idx]
+
+    image_grid = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
+            "gap": "10px",
+        },
+        children=[
+            html.Div(
+                [
+                    dcc.Checklist(
+                        id={"type": "blurry-checkbox", "index": i + start_idx},
+                        options=[{"label": "", "value": "checked"}],
+                        value=[],
+                        style={
+                            "position": "absolute",
+                            "top": "5px",
+                            "left": "5px",
+                            "zIndex": "2",
+                        },
+                    ),
+                    html.Div(
+                        [
+                            html.Img(
+                                src=f"/images/{image}",
+                                className="thumbnail",
+                                style={
+                                    "height": "200px",
+                                    "width": "100%",
+                                    "objectFit": "cover",
+                                },
+                                id={"type": "image", "index": i + start_idx},
+                            ),
+                            html.Img(
+                                src=f"/images/{image}",
+                                className="preview",
+                            ),
+                        ],
+                        className="hover-for-blur",
+                    ),
+                    html.Figcaption(f"Blur Val = {bval:.2f}"),
+                ],
+                style={"textAlign": "center", "position": "relative"},
+                id={"type": "image-container", "index": i + start_idx},
+            )
+            for i, (image, bval) in enumerate(zip(page_images, page_blur_val))
+        ],
+    )
+
     return (
         html.Div(
             [
-                html.Div(
-                    style={
-                        "display": "grid",
-                        "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
-                        "gap": "10px",
-                    },
-                    children=[
-                        html.Div(
-                            [
-                                dcc.Checklist(
-                                    id={"type": "blurry-checkbox", "index": i},
-                                    options=[{"label": "", "value": "checked"}],
-                                    value=[],
-                                    style={
-                                        "position": "absolute",
-                                        "top": "5px",
-                                        "left": "5px",
-                                        "zIndex": "2",
-                                    },
-                                ),
-                                html.Div(
-                                    [
-                                        html.Img(
-                                            src=f"/images/{image}",
-                                            className="thumbnail",
-                                            style={
-                                                "height": "200px",
-                                                "width": "100%",
-                                                "objectFit": "cover",
-                                            },
-                                            id={"type": "image", "index": i},
-                                        ),
-                                        html.Img(
-                                            src=f"/images/{image}",
-                                            className="preview",
-                                        ),
-                                    ],
-                                    className="hover-for-blur",
-                                ),
-                                html.Figcaption(f"Blur Val = {bval:.2f}"),
-                            ],
-                            style={"textAlign": "center", "position": "relative"},
-                            id={"type": "image-container", "index": i},
-                        )
-                        for i, (image, bval) in enumerate(
-                            zip(filtered_images, blur_val)
-                        )
-                    ],
-                ),
+                image_grid,
                 html.Div(
                     [
                         dbc.Button(
@@ -449,7 +588,14 @@ def display_blurry_images(blurred_images, blur_threshold, blur_stats):
         ),
         {"display": "block"},
         list(filtered_images),
+        total_pages,
     )
+
+
+# Callback to update pagination when items per page changes
+@app.callback(Output("pagination", "active_page"), Input("items-per-page", "value"))
+def reset_page(items_per_page):
+    return 1
 
 
 @app.callback(
@@ -471,6 +617,8 @@ def display_blurry_images(blurred_images, blur_threshold, blur_stats):
         State({"type": "blurry-checkbox", "index": ALL}, "value"),
         State("global-blur-stats", "data"),
         State("filtered-blurry-images", "data"),
+        State("pagination", "active_page"),
+        State("items-per-page", "value"),
     ],
 )
 def handle_blur_detection_and_deletion(
@@ -483,6 +631,8 @@ def handle_blur_detection_and_deletion(
     selected_values,
     global_blur_stats,
     filtered_blurry_images,
+    active_page,
+    items_per_page,
 ):
     ctx = dash.callback_context
     if not ctx.triggered:
@@ -562,9 +712,11 @@ def handle_blur_detection_and_deletion(
     elif trigger_id == "delete-blurry-button":
         if not filtered_blurry_images or not global_blur_stats:
             return no_update, no_update, "", no_update
+        # Calculate the start index for the current page
+        start_idx = (active_page - 1) * items_per_page
 
         selected_indices = [
-            i for i, val in enumerate(selected_values) if "checked" in val
+            i + start_idx for i, val in enumerate(selected_values) if "checked" in val
         ]
         images_to_delete = [filtered_blurry_images[i] for i in selected_indices]
 
@@ -625,14 +777,6 @@ def serve_image(filename):
     return send_from_directory(directory, file_to_serve)
 
 
-@app.server.route("/dup_images/<path:filename>")
-def serve_duplicate_image(filename):
-    # Ensure the directory is safely parsed
-    directory = os.path.dirname(filename)
-    file_to_serve = os.path.basename(filename)
-    return send_from_directory(directory, file_to_serve)
-
-
 @app.callback(
     Output("folder-path-duplicates", "data"),
     [Input("select-folder-duplicates", "n_clicks")],
@@ -662,15 +806,39 @@ app.clientside_callback(
 
 
 @app.callback(
-    [Output("duplicates-store", "data"), Output("duplicates-display", "children")],
-    [Input("folder-path-duplicates", "data"), Input("delete-button", "n_clicks")],
+    [
+        Output("duplicates-store", "data"),
+        Output("duplicates-display", "children"),
+        Output("filtered-duplicates", "data"),
+        Output("duplicates-pagination", "max_value"),
+        Output(
+            "current-page-images", "data"
+        ),  # New output to store current page image paths
+    ],
+    [
+        Input("folder-path-duplicates", "data"),
+        Input("delete-button", "n_clicks"),
+        Input("duplicates-pagination", "active_page"),
+        Input("duplicates-items-per-page", "value"),
+    ],
     [
         State("duplicates-store", "data"),
+        State("filtered-duplicates", "data"),
         State({"type": "select-checkbox", "index": ALL}, "value"),
+        State(
+            "current-page-images", "data"
+        ),  # New state to get current page image paths
     ],
 )
 def update_duplicates_display(
-    folder_path, delete_n_clicks, duplicates, selected_values
+    folder_path,
+    delete_n_clicks,
+    page,
+    items_per_page,
+    duplicates,
+    filtered_duplicates,
+    selected_values,
+    current_page_images,
 ):
     ctx = dash.callback_context
     if not ctx.triggered:
@@ -680,30 +848,95 @@ def update_duplicates_display(
 
     if button_id == "folder-path-duplicates":
         duplicates = find_duplicates(folder_path)
-        return duplicates, create_duplicates_display(duplicates)
+        filtered_groups = [group for group in duplicates if len(group) > 1]
+        filtered_duplicates = [item for group in filtered_groups for item in group]
+        total_pages = -(-len(filtered_groups) // items_per_page)  # Ceiling division
+        display, current_page_images = create_duplicates_display(
+            filtered_groups, page, items_per_page
+        )
+        return (
+            duplicates,
+            display,
+            filtered_duplicates,
+            total_pages,
+            current_page_images,
+        )
 
     elif button_id == "delete-button":
-        flattened_duplicates = [img for group in duplicates for img in group]
+        if not filtered_duplicates or not current_page_images:
+            return no_update
+
+        # Use the current_page_images to determine which images are on the current page
         selected_files = [
             img
-            for img, selected in zip(flattened_duplicates, selected_values)
+            for img, selected in zip(current_page_images, selected_values)
             if selected
         ]
 
+        # Delete files
         for file_path in selected_files:
             try:
                 os.remove(file_path)
+                print(f"Deleted: {file_path}")
             except OSError as e:
                 print(f"Error deleting file {file_path}: {e}")
 
-        updated_duplicates = [
-            [img for img in group if img not in selected_files] for group in duplicates
-        ]
-        updated_duplicates = [group for group in updated_duplicates if group]
+        # Update filtered_groups
+        updated_filtered_groups = []
+        for group in duplicates:
+            updated_group = [img for img in group if img not in selected_files]
+            if len(updated_group) > 1:
+                updated_filtered_groups.append(updated_group)
 
-        return updated_duplicates, create_duplicates_display(updated_duplicates)
+        # Recalculate filtered_duplicates
+        filtered_duplicates = [
+            item for group in updated_filtered_groups for item in group
+        ]
+
+        total_pages = -(
+            -len(updated_filtered_groups) // items_per_page
+        )  # Ceiling division
+
+        # Adjust page if necessary
+        if page > total_pages:
+            page = max(1, total_pages)
+
+        display, current_page_images = create_duplicates_display(
+            updated_filtered_groups, page, items_per_page
+        )
+        return (
+            updated_filtered_groups,
+            display,
+            filtered_duplicates,
+            total_pages,
+            current_page_images,
+        )
+
+    elif button_id in ["duplicates-pagination", "duplicates-items-per-page"]:
+        filtered_groups = [group for group in duplicates if len(group) > 1]
+        filtered_duplicates = [item for group in filtered_groups for item in group]
+        total_pages = -(-len(filtered_groups) // items_per_page)  # Ceiling division
+        display, current_page_images = create_duplicates_display(
+            filtered_groups, page, items_per_page
+        )
+        return (
+            duplicates,
+            display,
+            filtered_duplicates,
+            total_pages,
+            current_page_images,
+        )
 
     return dash.no_update
+
+
+# Add a callback to reset pagination when items per page changes
+@app.callback(
+    Output("duplicates-pagination", "active_page"),
+    Input("duplicates-items-per-page", "value"),
+)
+def reset_duplicates_page(items_per_page):
+    return 1
 
 
 if __name__ == "__main__":
