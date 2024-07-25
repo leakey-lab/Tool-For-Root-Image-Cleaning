@@ -382,14 +382,26 @@ def select_folder_for_blur(n_clicks):
     [Input("global-blur-stats", "data"), Input("blur-threshold-slider", "value")],
 )
 def display_blur_distribution(blur_stats_data, blur_threshold):
-    if not blur_stats_data:
+    if not blur_stats_data or "blur_scores" not in blur_stats_data:
         return go.Figure(), {"display": "none"}
 
     blur_values = list(blur_stats_data["blur_scores"].values())
-    mean_val = blur_stats_data["mean_blur"]
-    std_val = blur_stats_data["std_blur"]
+
+    # Check if blur_values is empty or contains None
+    if not blur_values or any(v is None for v in blur_values):
+        print(f"Warning: Invalid blur values detected: {blur_values}")
+        return go.Figure(), {"display": "none"}
+
+    mean_val = blur_stats_data.get("mean_blur")
+    std_val = blur_stats_data.get("std_blur")
+
+    if mean_val is None or std_val is None:
+        print("Warning: Mean or standard deviation is None")
+        return go.Figure(), {"display": "none"}
 
     # KDE plot
+    print(f"thing in blur_values {len(blur_values)}")
+
     kde = gaussian_kde(blur_values)
     x = np.linspace(min(blur_values), max(blur_values), 1000)
     y = kde(x)
