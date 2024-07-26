@@ -63,7 +63,7 @@ To set up the project, follow these steps:
      venv\Scripts\activate
      ```
 
-   - On macOS and Linux:
+   - On Linux:
      ```bash
      source venv/bin/activate
      ```
@@ -76,3 +76,6 @@ To set up the project, follow these steps:
 
     Click on the URL displayed on the terminal, It will take you to the Dashboard. 
 
+
+### NOTE:
+This code will not run on Apple Devices.
