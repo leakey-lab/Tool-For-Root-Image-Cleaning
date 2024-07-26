@@ -162,6 +162,80 @@ app.layout = html.Div(
         ),
         html.Div(
             [
+                html.Div(
+                    [
+                        html.Label(
+                            "Start Tube:",
+                            htmlFor="start-tube",
+                            style={"marginRight": "5px"},
+                        ),
+                        dbc.Input(
+                            id="start-tube",
+                            type="number",
+                            placeholder="Start Tube Number",
+                            min=1,
+                            max=999,
+                            step=1,
+                            value=1,  # Default value
+                            style={
+                                "textAlign": "center",
+                                "width": "100px",
+                                "height": "auto",
+                                "margin": "auto",
+                            },
+                        ),
+                    ],
+                    style={"display": "flex", "alignItems": "center"},
+                ),
+                html.Div(
+                    [
+                        html.Label(
+                            "End Tube:",
+                            htmlFor="end-tube",
+                            style={"marginRight": "5px"},
+                        ),
+                        dbc.Input(
+                            id="end-tube",
+                            type="number",
+                            placeholder="End Tube Number",
+                            min=1,
+                            max=999,
+                            step=1,
+                            value=128,  # Default value
+                            style={
+                                "textAlign": "center",
+                                "width": "100px",
+                                "height": "auto",
+                                "margin": "auto",
+                            },
+                        ),
+                    ],
+                    style={"display": "flex", "alignItems": "center"},
+                ),
+                dbc.Button("Check Missing Tubes", id="check-missing-tubes", n_clicks=0),
+            ],
+            id="missing-tubes-inputs",
+            style={
+                "display": "none",
+                "justifyContent": "center",
+                "alignItems": "center",
+                "gap": "20px",
+                "marginTop": "20px",
+                "marginBottom": "20px",
+            },
+        ),
+        dbc.Modal(
+            [
+                dbc.ModalHeader("Missing Tubes"),
+                dbc.ModalBody(id="missing-tubes-body"),
+                dbc.ModalFooter(
+                    dbc.Button("Close", id="close-modal", className="ml-auto")
+                ),
+            ],
+            id="missing-tubes-modal",
+        ),
+        html.Div(
+            [
                 html.Label("Set Analysis Threshold:", className="mb-1"),
                 dcc.Input(
                     id="threshold-input",
@@ -175,6 +249,7 @@ app.layout = html.Div(
                 "margin": "auto",
                 "width": "50%",
                 "marginBottom": "20px",
+                "marginTop": "20px",
             },
         ),
         dcc.Graph(id="image-graph", style={"display": "none"}),
@@ -362,6 +437,76 @@ def update_graph(folder_path, threshold):
         fig = create_bar_graph(data, threshold)
         return fig, {"display": "block"}
     return go.Figure(), {"display": "none"}
+
+
+@app.callback(Output("missing-tubes-inputs", "style"), Input("image-graph", "figure"))
+def show_missing_tubes_inputs(figure):
+    if figure and figure.get("data"):
+        return {
+            "display": "flex",
+            "justifyContent": "center",
+            "gap": "10px",
+            "marginTop": "20px",
+        }
+    return {"display": "none"}
+
+
+@app.callback(
+    Output("missing-tubes-modal", "is_open"),
+    Output("missing-tubes-body", "children"),
+    Input("check-missing-tubes", "n_clicks"),
+    Input("close-modal", "n_clicks"),
+    State("start-tube", "value"),
+    State("end-tube", "value"),
+    State("image-graph", "figure"),
+    prevent_initial_call=True,
+)
+def check_missing_tubes(n_clicks, close_clicks, start, end, figure):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return False, ""
+
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if button_id == "close-modal":
+        return False, ""
+
+    if not figure or not figure.get("data"):
+        return True, "Please select a directory and generate the graph first."
+
+    if start is None or end is None:
+        return True, "Please enter both start and end tube numbers."
+
+    if start > end:
+        return (
+            True,
+            "Start tube number should be less than or equal to end tube number.",
+        )
+
+    # Extract existing tubes from the figure data
+    existing_tubes = []
+    for trace in figure["data"]:
+        if "x" in trace:
+            existing_tubes.extend(trace["x"])
+
+    if not existing_tubes:
+        return True, "No tube data found in the graph. Please check your data."
+
+    missing_tubes = identify_missing_tubes(start, end, existing_tubes)
+
+    if missing_tubes:
+        message = f"Missing tubes: {', '.join(map(str, missing_tubes))}"
+    else:
+        message = "No missing tubes found in the specified range."
+
+    return True, message
+
+
+def identify_missing_tubes(start, end, existing_tubes):
+    all_tubes = set(range(start, end + 1))
+    existing_tubes = set(int(tube) for tube in existing_tubes if tube.isdigit())
+    missing_tubes = all_tubes - existing_tubes
+    return sorted(list(missing_tubes))
 
 
 @app.callback(

@@ -8,7 +8,6 @@ import cv2
 import os
 from concurrent.futures import ThreadPoolExecutor
 from scipy.stats import gaussian_kde
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 
@@ -166,50 +165,3 @@ def calculate_global_statistics(blur_scores):
     mean_blur = np.mean(scores)
     std_blur = np.std(scores)
     return mean_blur, std_blur
-
-
-def display_blur_distribution(blur_scores):
-    blur_values = list(blur_scores.values())
-
-    # Debug print to ensure blur_values are not None or empty
-    print(f"Blur values: {blur_values}")
-
-    if not blur_values:
-        raise ValueError("No blur values to display distribution.")
-
-    kde = gaussian_kde(blur_values)
-    x = np.linspace(min(blur_values), max(blur_values), 1000)
-    y = kde(x)
-
-    plt.plot(x, y)
-    plt.xlabel("Blur Score")
-    plt.ylabel("Density")
-    plt.title("Blur Score Distribution")
-    plt.show()
-
-
-if __name__ == "__main__":
-    # Check for CUDA availability
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available. This script requires a GPU.")
-
-    print("CUDA is available. Using GPU.")
-
-    # Initialize the detector
-    detector = LaplacianBlurDetector(num_levels=3).cuda()
-
-    # Example usage
-    folder_path = r".\2023 EF 1st Imaging 1-10"
-
-    total_files = [
-        os.path.join(folder_path, f)
-        for f in os.listdir(folder_path)
-        if f.lower().endswith((".png", ".jpg", ".jpeg"))
-    ]
-    blur_scores = compute_and_store_blur_scores(total_files, detector)
-    mean_blur, std_blur = calculate_global_statistics(blur_scores)
-    print(f"Mean blur score: {mean_blur}")
-    print(f"Standard deviation of blur score: {std_blur}")
-
-    # Display the blur distribution
-    display_blur_distribution(blur_scores)
