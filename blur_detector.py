@@ -3,11 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torchvision.transforms import ToTensor
-
 import cv2
 import os
 from concurrent.futures import ThreadPoolExecutor
-from scipy.stats import gaussian_kde
 from tqdm import tqdm
 
 
@@ -127,7 +125,7 @@ def process_image_batch(image_paths, detector):
     batch_tensors = torch.cat(batch_tensors, dim=0)
 
     with torch.no_grad():
-        with torch.cuda.amp.autocast():  # Enable mixed precision
+        with torch.amp.autocast("cuda"):  # Enable mixed precision
             batch_scores = detector(batch_tensors)
 
     results = {
@@ -142,7 +140,7 @@ def process_image_batch(image_paths, detector):
     return results
 
 
-def compute_and_store_blur_scores(image_paths, detector, batch_size=4):
+def compute_and_store_blur_scores(image_paths, detector, batch_size=8):
     blur_scores = {}
     num_images = len(image_paths)
 
