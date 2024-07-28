@@ -7,7 +7,6 @@ from directory_selector import select_folder
 from data_processor import process_images
 from visualization import create_bar_graph
 import os
-from flask import send_from_directory
 from duplicates import find_duplicates
 from scipy.stats import gaussian_kde
 import numpy as np
@@ -63,7 +62,7 @@ def create_image_card(image_path, index):
         [
             dbc.Card(
                 [
-                    dbc.CardImg(src=f"/dup_images/{image_path}", top=True),
+                    dbc.CardImg(src=encode_image(image_path), top=True),
                     dbc.CardBody(
                         [
                             dcc.Checklist(
@@ -409,14 +408,6 @@ app.layout = html.Div(
 )
 
 
-@app.server.route("/dup_images/<path:filename>")
-def serve_duplicate_image(filename):
-    # Ensure the directory is safely parsed
-    directory = os.path.dirname(filename)
-    file_to_serve = os.path.basename(filename)
-    return send_from_directory(directory, file_to_serve)
-
-
 @app.callback(
     Output("output-folder-path", "children"), [Input("select-folder-graph", "n_clicks")]
 )
@@ -701,7 +692,7 @@ def display_blurry_images(
                     html.Div(
                         [
                             html.Img(
-                                src=f"/images/{image}",
+                                src=encode_image(image),
                                 className="thumbnail",
                                 style={
                                     "height": "200px",
@@ -711,7 +702,7 @@ def display_blurry_images(
                                 id={"type": "image", "index": i + start_idx},
                             ),
                             html.Img(
-                                src=f"/images/{image}",
+                                src=encode_image(image),
                                 className="preview",
                             ),
                         ],
@@ -924,14 +915,6 @@ def handle_blur_detection_and_deletion(
         )
 
     return no_update, no_update, "", no_update
-
-
-# Route to serve images
-@server.route("/images/<path:filename>")
-def serve_image(filename):
-    directory = os.path.dirname(filename)
-    file_to_serve = os.path.basename(filename)
-    return send_from_directory(directory, file_to_serve)
 
 
 @app.callback(
