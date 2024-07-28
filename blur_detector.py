@@ -7,6 +7,7 @@ import cv2
 import os
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
+import json
 
 
 epsilon = 1e-8
@@ -140,22 +141,53 @@ def process_image_batch(image_paths, detector):
     return results
 
 
-def compute_and_store_blur_scores(image_paths, detector, batch_size=8):
-    blur_scores = {}
-    num_images = len(image_paths)
+def compute_and_store_blur_scores(image_paths, detector, batch_size=8, cache_file=None):
+    if cache_file is None:
+        cache_file = os.path.join(
+            os.path.dirname(image_paths[0]), "blur_scores_cache.json"
+        )
 
-    with ThreadPoolExecutor() as executor:
-        futures = []
-        for i in range(0, num_images, batch_size):
-            batch_paths = image_paths[i : i + batch_size]
-            futures.append(executor.submit(process_image_batch, batch_paths, detector))
+    # Load existing cache if it exists
+    if os.path.exists(cache_file):
+        with open(cache_file, "r") as f:
+            cached_scores = json.load(f)
+    else:
+        cached_scores = {}
 
-        # Using tqdm to show progress bar
-        for future in tqdm(futures, desc="Processing Batches"):
-            result = future.result()
-            blur_scores.update(result)
+    # Identify which images need processing
+    images_to_process = [
+        img for img in image_paths if os.path.normpath(img) not in cached_scores
+    ]
 
-    return blur_scores
+    if images_to_process:
+        blur_scores = {}
+        num_images = len(images_to_process)
+
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for i in range(0, num_images, batch_size):
+                batch_paths = images_to_process[i : i + batch_size]
+                futures.append(
+                    executor.submit(process_image_batch, batch_paths, detector)
+                )
+
+            # Using tqdm to show progress bar
+            for future in tqdm(futures, desc="Processing Batches"):
+                result = future.result()
+                blur_scores.update(result)
+
+        # Update cache with new scores
+        cached_scores.update(blur_scores)
+
+        # Save updated cache
+        with open(cache_file, "w") as f:
+            json.dump(cached_scores, f)
+
+    # Return all scores (cached + newly computed)
+    return {
+        os.path.normpath(img): cached_scores[os.path.normpath(img)]
+        for img in image_paths
+    }
 
 
 def calculate_global_statistics(blur_scores):
@@ -163,3 +195,20 @@ def calculate_global_statistics(blur_scores):
     mean_blur = np.mean(scores)
     std_blur = np.std(scores)
     return mean_blur, std_blur
+
+
+def is_cache_valid(image_paths, cache_file):
+    if not os.path.exists(cache_file):
+        return False
+
+    with open(cache_file, "r") as f:
+        cached_scores = json.load(f)
+
+    for img in image_paths:
+        img_path = os.path.normpath(img)
+        if img_path not in cached_scores:
+            return False
+        if os.path.getmtime(img) > os.path.getmtime(cache_file):
+            return False
+
+    return True
