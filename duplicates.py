@@ -110,7 +110,7 @@ def find_duplicates(directory, total_supported_threads=4):
                     ):
                         neighbor_file, (dhash2, phash2) = neighbor_file_data
                         if (
-                            dhash1 - dhash2 <= 10 and phash1 - phash2 <= 10
+                            dhash1 - dhash2 <= 8 and phash1 - phash2 <= 8
                         ) and neighbor_file not in processed:
                             group.append(neighbor_file)
                             processed.add(neighbor_file)
