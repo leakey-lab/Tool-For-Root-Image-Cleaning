@@ -16,10 +16,7 @@ This tool is designed for cleaning and analyzing root images. It provides a dash
 2. **Python 3.10+**
    - Python 3.10.10 is recommended for optimal compatibility.
    - Download from the [official Python website](https://www.python.org/downloads/release/python-31010/).
-<<<<<<< HEAD
-   - If you are on linux please install python with tkinter support using ```sudo apt-get install python3.10-tk ```
-=======
->>>>>>> 1b988637620c32662bf8a401a35b43d200bc28a7
+
 
 ### Setup Instructions
 
