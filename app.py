@@ -16,8 +16,9 @@ from blur_detector import (
     LaplacianBlurDetector,
     compute_and_store_blur_scores,
     calculate_global_statistics,
+    is_cache_valid,
 )
-
+import json
 import torch
 
 
@@ -793,6 +794,7 @@ def handle_blur_detection_and_deletion(
             return no_update, no_update, "", no_update
 
         folder_path = folder_data["path"]
+        cache_file = os.path.join(folder_path, "blur_scores_cache.json")
 
         if trigger_id == "select-folder-blur":
             blur_detection_state = {"running": True, "completed": False, "progress": 0}
@@ -806,24 +808,30 @@ def handle_blur_detection_and_deletion(
             for f in os.listdir(folder_path)
             if f.lower().endswith((".png", ".jpg", ".jpeg"))
         ]
-        file_count = len(total_files)
 
         if not blur_detection_state["completed"]:
-            blur_scores_global = compute_and_store_blur_scores(total_files, detector)
+            if is_cache_valid(total_files, cache_file):
+                print("Using cached blur scores")
+                with open(cache_file, "r") as f:
+                    blur_scores_global = json.load(f)
+            else:
+                print("Computing blur scores")
+                blur_scores_global = compute_and_store_blur_scores(
+                    total_files, detector, cache_file=cache_file
+                )
+
             mean_blur_global, std_blur_global = calculate_global_statistics(
                 blur_scores_global
             )
 
             new_blurred_images, blur_val = [], []
-            for i, file_path in enumerate(total_files):
+            for file_path in total_files:
                 blur_score = blur_scores_global.get(os.path.normpath(file_path))
                 if blur_score is not None:
                     lower_bound = mean_blur_global - blur_threshold * std_blur_global
                     if blur_score < lower_bound:
                         new_blurred_images.append(file_path)
                         blur_val.append(blur_score)
-
-                blur_detection_state["progress"] = int(((i + 1) / file_count) * 100)
 
             blur_detection_state["completed"] = True
             global_blur_stats = {
@@ -834,7 +842,7 @@ def handle_blur_detection_and_deletion(
             return (
                 blur_detection_state,
                 [new_blurred_images, blur_val],
-                f"Progress: {blur_detection_state['progress']}%",
+                "Blur detection completed",
                 global_blur_stats,
             )
 
