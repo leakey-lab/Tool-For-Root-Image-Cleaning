@@ -3,6 +3,11 @@
 ## Description
 
 This tool is designed for cleaning and analyzing root images. It provides a dashboard interface for various image processing tasks, including blur detection, duplicate identification, and missing tube analysis.
+# Tool for Root Image Cleaning
+
+## Description
+
+This tool is designed for cleaning and analyzing root images. It provides a dashboard interface for various image processing tasks, including blur detection, duplicate identification, and missing tube analysis.
 
 ## Installation
 
@@ -45,10 +50,30 @@ This tool is designed for cleaning and analyzing root images. It provides a dash
      ```
 
 4. **Install Required Packages**
+3. **Activate the Virtual Environment**
+   - Windows:
+     ```bash
+     venv\Scripts\activate
+     ```
+   - Linux/macOS:
+     ```bash
+     source venv/bin/activate
+     ```
+
+4. **Install Required Packages**
    ```bash
    pip install -r requirements.txt
    ```
 
+5. **Install PyTorch**
+   
+   PyTorch installation varies depending on your operating system and CUDA version. To get the correct installation command:
+
+   - Visit the [PyTorch Get Started page](https://pytorch.org/get-started/locally/)
+   - Select your preferences (PyTorch version, operating system, package manager, CUDA version)
+   - Use the generated command to install PyTorch
+
+   -For Windows Use This:
 5. **Install PyTorch**
    
    PyTorch installation varies depending on your operating system and CUDA version. To get the correct installation command:
@@ -74,16 +99,39 @@ This tool is designed for cleaning and analyzing root images. It provides a dash
 1. **Run the Application**
 
    Activate your Virtual environemnt first.
+   Activate your Virtual environemnt first.
 
+   - Windows:
    - Windows:
      ```bash
      venv\Scripts\activate
      ```
    - Linux/macOS:
+   - Linux/macOS:
      ```bash
      source venv/bin/activate
      ```
 
+   -Run the App:
+   
+   ```bash
+   python app.py
+   ```
+
+2. **Access the Dashboard**
+   - Open the URL displayed in the terminal in your web browser.
+   - This will take you to the Root Image Analysis Dashboard.
+
+## Features
+
+- Image Quantity Graph generation
+- Missing tube analysis
+- Blur detection and analysis
+- Duplicate image identification
+
+## Note
+
+This application is not compatible with Apple Silicon devices due to CUDA requirements.
    -Run the App:
    
    ```bash
