@@ -67,3 +67,27 @@
 .hover-for-blur:hover .preview {
     transform: translate(-50%, -50%) scale(1);
 }
+
+.empty-image-hover {
+    transition: transform 0.3s ease-in-out;
+}
+
+.empty-image-hover:hover {
+    transform: scale(1.5);
+    z-index: 1000;
+}
+
+.card {
+    overflow: visible !important;
+}
+
+.empty-image-container {
+    position: relative;
+}
+
+.empty-image-container .empty-image-checkbox {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 1000;
+}

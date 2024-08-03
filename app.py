@@ -20,6 +20,11 @@ from blur_detector import (
 )
 import json
 import torch
+from empty_image_detector import (
+    find_empty_images,
+    get_paged_empty_images,
+    delete_images,
+)
 
 
 # Initialize the Dash app
@@ -40,12 +45,18 @@ std_blur_global = 0
 
 detector = LaplacianBlurDetector().eval()
 if torch.cuda.is_available():
+    torch.cuda.set_device(0)  # Use the first GPU
     detector = detector.cuda()
 
 
 def encode_image(image_file):
-    encoded = base64.b64encode(open(image_file, "rb").read())
-    return "data:image/png;base64,{}".format(encoded.decode())
+    try:
+        with open(image_file, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:image/jpeg;base64,{encoded}"
+    except FileNotFoundError:
+        print(f"File not found: {image_file}")
+        return ""
 
 
 def create_image_card(image_path, index):
@@ -69,7 +80,7 @@ def create_image_card(image_path, index):
                             dcc.Checklist(
                                 id={"type": "select-checkbox", "index": index},
                                 options=[{"label": "", "value": "checked"}],
-                                value=[],
+                                value=["checked"],
                                 className="position-absolute top-0 start-0 m-2",
                             ),
                             html.P(caption, className="card-text"),
@@ -149,264 +160,452 @@ app.layout = html.Div(
             ],
             style={"marginBottom": "30px"},
         ),
+        # Main feature buttons
         html.Div(
             [
                 dbc.Button(
-                    "Select folder for Graph",
-                    id="select-folder-graph",
-                    className="mb-2",
+                    "Data Sufficiency Graph", id="show-graph-button", className="me-2"
                 ),
-                html.Div(id="output-folder-path"),
-            ],
-            style={"textAlign": "center", "marginBottom": "20px"},
-        ),
-        html.Div(
-            [
-                html.Div(
-                    [
-                        html.Label(
-                            "Start Tube:",
-                            htmlFor="start-tube",
-                            style={"marginRight": "5px"},
-                        ),
-                        dbc.Input(
-                            id="start-tube",
-                            type="number",
-                            placeholder="Start Tube Number",
-                            min=1,
-                            max=999,
-                            step=1,
-                            value=1,  # Default value
-                            style={
-                                "textAlign": "center",
-                                "width": "100px",
-                                "height": "auto",
-                                "margin": "auto",
-                            },
-                        ),
-                    ],
-                    style={"display": "flex", "alignItems": "center"},
-                ),
-                html.Div(
-                    [
-                        html.Label(
-                            "End Tube:",
-                            htmlFor="end-tube",
-                            style={"marginRight": "5px"},
-                        ),
-                        dbc.Input(
-                            id="end-tube",
-                            type="number",
-                            placeholder="End Tube Number",
-                            min=1,
-                            max=999,
-                            step=1,
-                            value=128,  # Default value
-                            style={
-                                "textAlign": "center",
-                                "width": "100px",
-                                "height": "auto",
-                                "margin": "auto",
-                            },
-                        ),
-                    ],
-                    style={"display": "flex", "alignItems": "center"},
-                ),
-                dbc.Button("Check Missing Tubes", id="check-missing-tubes", n_clicks=0),
-            ],
-            id="missing-tubes-inputs",
-            style={
-                "display": "none",
-                "justifyContent": "center",
-                "alignItems": "center",
-                "gap": "20px",
-                "marginTop": "20px",
-                "marginBottom": "20px",
-            },
-        ),
-        dbc.Modal(
-            [
-                dbc.ModalHeader("Missing Tubes"),
-                dbc.ModalBody(id="missing-tubes-body"),
-                dbc.ModalFooter(
-                    dbc.Button("Close", id="close-modal", className="ml-auto")
-                ),
-            ],
-            id="missing-tubes-modal",
-        ),
-        html.Div(
-            [
-                html.Label("Set Analysis Threshold:", className="mb-1"),
-                dcc.Input(
-                    id="threshold-input",
-                    type="number",
-                    value=100,
-                    style={"width": "80%", "margin": "auto"},
-                ),
-            ],
-            style={
-                "textAlign": "center",
-                "margin": "auto",
-                "width": "50%",
-                "marginBottom": "20px",
-                "marginTop": "20px",
-            },
-        ),
-        dcc.Graph(id="image-graph", style={"display": "none"}),
-        html.Div(
-            [
+                dbc.Button("Blur Detection", id="show-blur-button", className="me-2"),
                 dbc.Button(
-                    "Select folder for Blur Detection",
-                    id="select-folder-blur",
-                    className="mb-2",
+                    "Emptiness Detection", id="show-empty-button", className="me-2"
                 ),
-                dcc.Graph(id="blur-distribution-graph", style={"display": "none"}),
+                dbc.Button(
+                    "Duplicate Detection", id="show-duplicates-button", className="me-2"
+                ),
+            ],
+            style={"textAlign": "center", "marginTop": "20px", "marginBottom": "20px"},
+        ),
+        # Graph section (initially hidden)
+        html.Div(
+            [
+                html.H3("Data Sufficiency Graph", style={"textAlign": "center"}),
                 html.Div(
                     [
-                        html.Label("Adjust Blur Threshold:", className="mb-1"),
-                        dcc.Slider(
-                            id="blur-threshold-slider",
-                            min=0,
-                            max=3,
-                            step=0.05,
-                            value=1.5,
-                            marks={i: f"{i}" for i in range(0, 4)},
-                            tooltip={"placement": "bottom", "always_visible": True},
+                        dbc.Button(
+                            "Select folder for Graph",
+                            id="select-folder-graph",
+                            className="mb-2",
                         ),
+                        html.Div(id="output-folder-path"),
                     ],
-                    style={"textAlign": "center", "margin": "auto", "width": "50%"},
+                    style={"textAlign": "center", "marginBottom": "20px"},
                 ),
                 html.Div(
                     [
-                        html.Label("Items per page:", className="me-2"),
-                        dcc.Dropdown(
-                            id="items-per-page",
-                            options=[
-                                {"label": str(i), "value": i} for i in [10, 20, 30, 50]
+                        html.Div(
+                            [
+                                html.Label(
+                                    "Start Tube:",
+                                    htmlFor="start-tube",
+                                    style={"marginRight": "5px"},
+                                ),
+                                dbc.Input(
+                                    id="start-tube",
+                                    type="number",
+                                    placeholder="Start Tube Number",
+                                    min=1,
+                                    max=999,
+                                    step=1,
+                                    value=1,  # Default value
+                                    style={
+                                        "textAlign": "center",
+                                        "width": "100px",
+                                        "height": "auto",
+                                        "margin": "auto",
+                                    },
+                                ),
                             ],
-                            value=20,
-                            style={"width": "100px"},
+                            style={"display": "flex", "alignItems": "center"},
+                        ),
+                        html.Div(
+                            [
+                                html.Label(
+                                    "End Tube:",
+                                    htmlFor="end-tube",
+                                    style={"marginRight": "5px"},
+                                ),
+                                dbc.Input(
+                                    id="end-tube",
+                                    type="number",
+                                    placeholder="End Tube Number",
+                                    min=1,
+                                    max=999,
+                                    step=1,
+                                    value=128,  # Default value
+                                    style={
+                                        "textAlign": "center",
+                                        "width": "100px",
+                                        "height": "auto",
+                                        "margin": "auto",
+                                    },
+                                ),
+                            ],
+                            style={"display": "flex", "alignItems": "center"},
+                        ),
+                        dbc.Button(
+                            "Check Missing Tubes", id="check-missing-tubes", n_clicks=0
                         ),
                     ],
+                    id="missing-tubes-inputs",
                     style={
                         "display": "flex",
                         "justifyContent": "center",
                         "alignItems": "center",
+                        "gap": "20px",
                         "marginTop": "20px",
                         "marginBottom": "20px",
                     },
                 ),
+                dbc.Modal(
+                    [
+                        dbc.ModalHeader("Missing Tubes"),
+                        dbc.ModalBody(id="missing-tubes-body"),
+                        dbc.ModalFooter(
+                            dbc.Button("Close", id="close-modal", className="ml-auto")
+                        ),
+                    ],
+                    id="missing-tubes-modal",
+                ),
                 html.Div(
-                    id="high-load-warning",
+                    [
+                        html.Label("Set Analysis Threshold:", className="mb-1"),
+                        dcc.Input(
+                            id="threshold-input",
+                            type="number",
+                            value=100,
+                            style={"width": "80%", "margin": "auto"},
+                        ),
+                    ],
                     style={
-                        "color": "orange",
-                        "fontWeight": "bold",
-                        "marginBottom": "10px",
                         "textAlign": "center",
-                        "display": "none",
+                        "margin": "auto",
+                        "width": "50%",
+                        "marginBottom": "20px",
+                        "marginTop": "20px",
                     },
                 ),
-                dbc.Pagination(
-                    id="pagination",
-                    active_page=1,
-                    max_value=1,
-                    first_last=True,
-                    previous_next=True,
-                    fully_expanded=False,
-                    style={
-                        "justifyContent": "center",
-                        "overflowX": "auto",  # Allows horizontal scrolling if needed
-                        "whiteSpace": "nowrap",  # Prevents wrapping of pagination items
-                        "padding": "10px 0px",  # Add some vertical padding
-                    },
-                ),
-                html.Div(id="blurry-images-display"),
-                dbc.Button(
-                    "Delete Selected Blurry Images",
-                    id="delete-blurry-button",
-                    color="danger",
-                    className="mt-3",
-                    style={"display": "none"},
-                ),
-                dcc.Store(id="folder-path"),
-                dcc.Store(
-                    id="blur-detection-state",
-                    data={"running": False, "completed": False, "progress": 0},
-                ),
-                dcc.Store(id="blurred-images", data=[]),
-                dcc.Store(id="filtered-blurry-images", data=[]),
-                dcc.Loading(
-                    id="loading-blur-detection",
-                    type="default",
-                    children=html.Div(id="loading-output"),
-                ),
-                dcc.Store(id="global-blur-stats", data={}),
+                dcc.Graph(id="image-graph"),
             ],
-            style={"textAlign": "center", "marginBottom": "50px"},
+            id="graph-section",
+            style={"display": "none"},
         ),
         html.Div(
             [
-                dbc.Button(
-                    "Select Folder for Duplicate Detection",
-                    id="select-folder-duplicates",
-                    className="mb-2",
-                ),
+                html.H3("Blur Detection", style={"textAlign": "center"}),
                 html.Div(
                     [
-                        html.Label("Items per page:", className="me-2"),
-                        dcc.Dropdown(
-                            id="duplicates-items-per-page",
-                            options=[
-                                {"label": str(i), "value": i}
-                                for i in [5, 10, 20, 30, 50]
+                        dbc.Button(
+                            "Select folder for Blur Detection",
+                            id="select-folder-blur",
+                            className="mb-2",
+                        ),
+                        dcc.Graph(
+                            id="blur-distribution-graph", style={"display": "none"}
+                        ),
+                        html.Div(
+                            [
+                                html.Label("Adjust Blur Threshold:", className="mb-1"),
+                                dcc.Slider(
+                                    id="blur-threshold-slider",
+                                    min=0,
+                                    max=3,
+                                    step=0.05,
+                                    value=1.5,
+                                    marks={i: f"{i}" for i in range(0, 4)},
+                                    tooltip={
+                                        "placement": "bottom",
+                                        "always_visible": True,
+                                    },
+                                ),
                             ],
-                            value=20,
-                            style={"width": "100px"},
+                            style={
+                                "textAlign": "center",
+                                "margin": "auto",
+                                "width": "50%",
+                            },
+                        ),
+                        html.Div(
+                            [
+                                html.Label("Items per page:", className="me-2"),
+                                dcc.Dropdown(
+                                    id="items-per-page",
+                                    options=[
+                                        {"label": str(i), "value": i}
+                                        for i in [10, 20, 30, 50]
+                                    ],
+                                    value=20,
+                                    style={"width": "100px"},
+                                ),
+                            ],
+                            style={
+                                "display": "flex",
+                                "justifyContent": "center",
+                                "alignItems": "center",
+                                "marginTop": "20px",
+                                "marginBottom": "20px",
+                            },
+                        ),
+                        html.Div(
+                            id="high-load-warning",
+                            style={
+                                "color": "orange",
+                                "fontWeight": "bold",
+                                "marginBottom": "10px",
+                                "textAlign": "center",
+                                "display": "none",
+                            },
+                        ),
+                        dbc.Pagination(
+                            id="pagination",
+                            active_page=1,
+                            max_value=1,
+                            first_last=True,
+                            previous_next=True,
+                            fully_expanded=False,
+                            style={
+                                "justifyContent": "center",
+                                "overflowX": "auto",  # Allows horizontal scrolling if needed
+                                "whiteSpace": "nowrap",  # Prevents wrapping of pagination items
+                                "padding": "10px 0px",  # Add some vertical padding
+                            },
+                        ),
+                        html.Div(id="blurry-images-display"),
+                        dbc.Button(
+                            "Delete Selected Blurry Images",
+                            id="delete-blurry-button",
+                            color="danger",
+                            className="mt-3",
+                            style={
+                                "display": "none",
+                                "textAlign": "center",
+                            },
+                        ),
+                        dcc.Store(id="folder-path"),
+                        dcc.Store(
+                            id="blur-detection-state",
+                            data={"running": False, "completed": False, "progress": 0},
+                        ),
+                        dcc.Store(id="blurred-images", data=[]),
+                        dcc.Store(id="filtered-blurry-images", data=[]),
+                        dcc.Loading(
+                            id="loading-blur-detection",
+                            type="default",
+                            children=html.Div(id="loading-output"),
+                        ),
+                        dcc.Store(id="global-blur-stats", data={}),
+                    ],
+                    style={"textAlign": "center", "marginBottom": "50px"},
+                ),
+            ],
+            id="blur-section",
+            style={"display": "none"},
+        ),
+        html.Div(
+            [
+                html.H3("Duplicate Detection", style={"textAlign": "center"}),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Select Folder for Duplicate Detection",
+                            id="select-folder-duplicates",
+                            className="mb-2",
+                            style={"textAlign": "center"},
+                        ),
+                        html.Div(
+                            [
+                                html.Label("Items per page:", className="me-2"),
+                                dcc.Dropdown(
+                                    id="duplicates-items-per-page",
+                                    options=[
+                                        {"label": str(i), "value": i}
+                                        for i in [5, 10, 20, 30, 50]
+                                    ],
+                                    value=20,
+                                    style={"width": "100px"},
+                                ),
+                            ],
+                            style={
+                                "display": "flex",
+                                "justifyContent": "center",
+                                "alignItems": "center",
+                                "marginTop": "20px",
+                                "marginBottom": "20px",
+                            },
+                        ),
+                        dbc.Pagination(
+                            id="duplicates-pagination",
+                            active_page=1,
+                            max_value=1,
+                            first_last=True,
+                            previous_next=True,
+                            fully_expanded=False,
+                            style={
+                                "justifyContent": "center",
+                                "overflowX": "auto",
+                                "whiteSpace": "nowrap",
+                                "padding": "10px 0",
+                            },
+                        ),
+                        html.Div(id="duplicates-display"),
+                        dbc.Button(
+                            "Delete Selected Images",
+                            id="delete-button",
+                            color="danger",
+                            className="mb-2",
+                        ),
+                        dcc.Store(id="folder-path-duplicates"),
+                        dcc.Store(id="duplicates-store", data=[]),
+                        dcc.Store(id="filtered-duplicates", data=[]),
+                        dcc.Loading(
+                            id="loading-duplicates-detection",
+                            type="default",
+                            children=html.Div(id="loading-output-duplicates"),
+                        ),
+                        dcc.Store(id="current-page-images", storage_type="memory"),
+                    ],
+                    style={"textAlign": "center", "marginBottom": "20px"},
+                ),
+            ],
+            id="duplicates-section",
+            style={"display": "none"},
+        ),
+        html.Div(
+            [
+                html.H3("Empty Image Detection", style={"textAlign": "center"}),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Select Folder for Empty Image Detection",
+                            id="select-folder-empty",
+                            className="mb-2",
+                        ),
+                        html.Div(
+                            [
+                                html.Label("Items per page:", className="me-2"),
+                                dcc.Dropdown(
+                                    id="empty-images-per-page",
+                                    options=[
+                                        {"label": str(i), "value": i}
+                                        for i in [10, 20, 30, 50]
+                                    ],
+                                    value=20,
+                                    style={"width": "100px"},
+                                ),
+                            ],
+                            style={
+                                "display": "flex",
+                                "justifyContent": "center",
+                                "alignItems": "center",
+                                "marginTop": "20px",
+                                "marginBottom": "20px",
+                            },
+                        ),
+                        dbc.Pagination(
+                            id="empty-images-pagination",
+                            active_page=1,
+                            max_value=1,
+                            first_last=True,
+                            previous_next=True,
+                            fully_expanded=False,
+                            style={
+                                "justifyContent": "center",
+                                "overflowX": "auto",
+                                "whiteSpace": "nowrap",
+                                "padding": "10px 0",
+                            },
+                        ),
+                        html.Div(id="empty-images-output"),
+                        dbc.Button(
+                            "Delete Selected Empty Images",
+                            id="delete-empty-images",
+                            color="danger",
+                            className="mt-3",
+                            style={
+                                "display": "block",
+                                "margin": "20px auto",
+                            },
+                        ),
+                        dcc.Loading(
+                            id="loading-empty-detection",
+                            type="default",
+                            children=html.Div(id="loading-output-empty"),
                         ),
                     ],
-                    style={
-                        "display": "flex",
-                        "justifyContent": "center",
-                        "alignItems": "center",
-                        "marginTop": "20px",
-                        "marginBottom": "20px",
-                    },
+                    style={"textAlign": "center", "marginBottom": "50px"},
                 ),
-                dbc.Pagination(
-                    id="duplicates-pagination",
-                    active_page=1,
-                    max_value=1,
-                    first_last=True,
-                    previous_next=True,
-                    fully_expanded=False,
-                    style={
-                        "justifyContent": "center",
-                        "overflowX": "auto",
-                        "whiteSpace": "nowrap",
-                        "padding": "10px 0",
-                    },
-                ),
-                html.Div(id="duplicates-display"),
-                dbc.Button(
-                    "Delete Selected Images",
-                    id="delete-button",
-                    color="danger",
-                    className="mb-2",
-                ),
-                dcc.Store(id="folder-path-duplicates"),
-                dcc.Store(id="duplicates-store", data=[]),
-                dcc.Store(id="filtered-duplicates", data=[]),
-                dcc.Loading(
-                    id="loading-duplicates-detection",
-                    type="default",
-                    children=html.Div(id="loading-output-duplicates"),
-                ),
-                dcc.Store(id="current-page-images", storage_type="memory"),
             ],
-            style={"textAlign": "center", "marginBottom": "20px"},
+            id="empty-section",
+            style={"display": "none"},
         ),
+        # ... (other parts of the layout remain unchanged)
+        dcc.Store(id="empty-images-store"),
     ]
 )
+
+
+@app.callback(
+    [
+        Output("graph-section", "style"),
+        Output("blur-section", "style"),
+        Output("duplicates-section", "style"),
+        Output("empty-section", "style"),
+    ],
+    [
+        Input("show-graph-button", "n_clicks"),
+        Input("show-blur-button", "n_clicks"),
+        Input("show-duplicates-button", "n_clicks"),
+        Input("show-empty-button", "n_clicks"),
+    ],
+)
+def toggle_sections(graph_clicks, blur_clicks, duplicates_clicks, empty_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return (
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+        )
+
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if button_id == "show-graph-button":
+        return (
+            {"display": "block"},
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+        )
+    elif button_id == "show-blur-button":
+        return (
+            {"display": "none"},
+            {"display": "block"},
+            {"display": "none"},
+            {"display": "none"},
+        )
+    elif button_id == "show-duplicates-button":
+        return (
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "block"},
+            {"display": "none"},
+        )
+    elif button_id == "show-empty-button":
+        return (
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "none"},
+            {"display": "block"},
+        )
+
+    # Default case
+    return (
+        {"display": "none"},
+        {"display": "none"},
+        {"display": "none"},
+        {"display": "none"},
+    )
 
 
 @app.callback(
@@ -641,7 +840,7 @@ def update_warning(items_per_page):
 def display_blurry_images(
     blurred_images, blur_threshold, blur_stats, page, items_per_page
 ):
-    if not blurred_images:
+    if not blurred_images or not blur_stats:
         return html.Div("No blurry images found."), {"display": "none"}, [], 1
 
     blur_scores_global = blur_stats["blur_scores"]
@@ -650,13 +849,12 @@ def display_blurry_images(
 
     filtered_images = []
     blur_val = []
-    for image in blurred_images[0]:
-        result = fetch_and_check_blurry(
-            image, blur_threshold, blur_scores_global, mean_blur_global, std_blur_global
-        )
-        if result is not None:
-            filtered_images.append(result[0])
-            blur_val.append(result[1])
+    for image, score in zip(blurred_images[0], blurred_images[1]):
+        if os.path.exists(image):  # Check if the image file still exists
+            lower_bound = mean_blur_global - blur_threshold * std_blur_global
+            if score < lower_bound:
+                filtered_images.append(image)
+                blur_val.append(score)
 
     # Sort the filtered images by blur score in ascending order
     sorted_images = sorted(zip(filtered_images, blur_val), key=lambda x: x[1])
@@ -682,7 +880,7 @@ def display_blurry_images(
                     dcc.Checklist(
                         id={"type": "blurry-checkbox", "index": i + start_idx},
                         options=[{"label": "", "value": "checked"}],
-                        value=[],
+                        value=["checked"],
                         style={
                             "position": "absolute",
                             "top": "5px",
@@ -715,6 +913,7 @@ def display_blurry_images(
                 id={"type": "image-container", "index": i + start_idx},
             )
             for i, (image, bval) in enumerate(zip(page_images, page_blur_val))
+            if os.path.exists(image)  # Only include images that still exist
         ],
     )
 
@@ -868,9 +1067,8 @@ def handle_blur_detection_and_deletion(
     elif trigger_id == "delete-blurry-button":
         if not filtered_blurry_images or not global_blur_stats:
             return no_update, no_update, "", no_update
-        # Calculate the start index for the current page
-        start_idx = (active_page - 1) * items_per_page
 
+        start_idx = (active_page - 1) * items_per_page
         selected_indices = [
             i + start_idx for i, val in enumerate(selected_values) if "checked" in val
         ]
@@ -878,9 +1076,12 @@ def handle_blur_detection_and_deletion(
 
         # Update blurred_images list by removing the selected images
         updated_blurred_images = [
-            img
-            for i, img in enumerate(filtered_blurry_images)
-            if i not in selected_indices
+            img for img in blurred_images[0] if img not in images_to_delete
+        ]
+        updated_blur_val = [
+            val
+            for img, val in zip(blurred_images[0], blurred_images[1])
+            if img not in images_to_delete
         ]
 
         # Update global_blur_stats by removing the blur scores of the deleted images
@@ -917,7 +1118,7 @@ def handle_blur_detection_and_deletion(
 
         return (
             blur_detection_state,
-            [updated_blurred_images, list(updated_blur_scores.values())],
+            [updated_blurred_images, updated_blur_val],
             "Deletion completed",
             updated_global_blur_stats,
         )
@@ -1085,6 +1286,204 @@ def update_duplicates_display(
 )
 def reset_duplicates_page(items_per_page):
     return 1
+
+
+@app.callback(
+    [
+        Output("empty-images-store", "data"),
+        Output("empty-images-pagination", "max_value"),
+    ],
+    Input("select-folder-empty", "n_clicks"),
+    prevent_initial_call=True,
+)
+def detect_empty_images(n_clicks):
+    if n_clicks is None:
+        return dash.no_update, dash.no_update
+
+    folder_path = select_folder()
+    print(f"Selected folder path: {folder_path}")
+    if not folder_path:
+        print("No folder selected")
+        return [], 1
+
+    try:
+        empty_images = find_empty_images(folder_path)
+        print(f"Found empty images: {empty_images}")
+        if empty_images is None:
+            print("find_empty_images returned None")
+            return [], 1
+
+        max_pages = -(-len(empty_images) // 20)  # Ceiling division
+        print(f"Max pages: {max_pages}")
+        return empty_images, max_pages
+    except Exception as e:
+        print(f"Error in detect_empty_images: {str(e)}")
+        import traceback
+
+        print(traceback.format_exc())
+        return [], 1
+
+
+@app.callback(
+    Output("empty-images-output", "children"),
+    [
+        Input("empty-images-store", "data"),
+        Input("empty-images-pagination", "active_page"),
+        Input("empty-images-per-page", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def display_empty_images(empty_images, page, items_per_page):
+    print(f"display_empty_images called with: {empty_images}, {page}, {items_per_page}")
+    if empty_images is None or len(empty_images) == 0:
+        print("No empty images found")
+        return html.Div("No empty images found.", className="text-center mt-4")
+
+    try:
+        paged_images = get_paged_empty_images(empty_images, page, items_per_page)
+        print(f"Paged images: {paged_images}")
+
+        image_grid = html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
+                "gap": "20px",
+                "padding": "20px",
+            },
+            children=[
+                html.Div(
+                    [
+                        dbc.Card(
+                            [
+                                (
+                                    dbc.CardImg(
+                                        src=encode_image(img[0]),
+                                        top=True,
+                                        style={"height": "200px", "objectFit": "cover"},
+                                        className="empty-image-hover",
+                                    )
+                                    if encode_image(img[0])
+                                    else html.Div(
+                                        "Image not found",
+                                        style={
+                                            "height": "200px",
+                                            "display": "flex",
+                                            "alignItems": "center",
+                                            "justifyContent": "center",
+                                        },
+                                    )
+                                ),
+                                dbc.CardBody(
+                                    [
+                                        html.H6(
+                                            os.path.basename(img[0]),
+                                            className="card-title",
+                                            style={"fontSize": "12px"},
+                                        ),
+                                        html.P(
+                                            f"Unique Count: {img[2]}",
+                                            className="card-text",
+                                            style={"fontSize": "11px"},
+                                        ),
+                                    ]
+                                ),
+                            ],
+                            style={"cursor": "pointer"},
+                        ),
+                        dcc.Checklist(
+                            id={"type": "empty-image-checkbox", "index": i},
+                            options=[{"label": "", "value": "checked"}],
+                            value=["checked"],
+                            style={
+                                "position": "absolute",
+                                "top": "10px",
+                                "left": "10px",
+                            },
+                        ),
+                    ],
+                    id={"type": "empty-image-container", "index": i},
+                    style={"position": "relative"},
+                )
+                for i, img in enumerate(paged_images)
+            ],
+        )
+
+        return html.Div(
+            [
+                html.H5(
+                    f"Displaying {len(paged_images)} of {len(empty_images)} images with unique count < 10",
+                    className="text-center mb-4",
+                ),
+                image_grid,
+            ]
+        )
+    except Exception as e:
+        print(f"Error in display_empty_images: {str(e)}")
+        import traceback
+
+        print(traceback.format_exc())
+        return html.Div(f"An error occurred: {str(e)}", className="text-center mt-4")
+
+
+# Add this clientside callback to handle image clicks for empty images
+app.clientside_callback(
+    """
+    function(n_clicks, value) {
+        if (n_clicks === undefined || n_clicks === null) {
+            return dash_clientside.no_update;
+        }
+        return value.length === 0 ? ['checked'] : [];
+    }
+    """,
+    Output({"type": "empty-image-checkbox", "index": MATCH}, "value"),
+    Input({"type": "empty-image-container", "index": MATCH}, "n_clicks"),
+    State({"type": "empty-image-checkbox", "index": MATCH}, "value"),
+)
+
+
+# Add a callback to reset pagination when items per page changes
+# Update the callback for resetting pagination and updating max_value
+@app.callback(
+    [
+        Output("empty-images-pagination", "active_page"),
+        Output("empty-images-pagination", "max_value", allow_duplicate=True),
+    ],
+    [Input("empty-images-per-page", "value")],
+    [State("empty-images-store", "data")],
+    prevent_initial_call=True,
+)
+def reset_empty_images_page(items_per_page, empty_images):
+    if empty_images:
+        max_pages = -(-len(empty_images) // items_per_page)  # Ceiling division
+    else:
+        max_pages = 1
+    return 1, max_pages
+
+
+@app.callback(
+    Output("empty-images-store", "data", allow_duplicate=True),
+    Input("delete-empty-images", "n_clicks"),
+    State("empty-images-store", "data"),
+    State({"type": "empty-image-checkbox", "index": ALL}, "value"),
+    prevent_initial_call=True,
+)
+def delete_selected_empty_images(n_clicks, empty_images, selected_images):
+    if n_clicks is None or not empty_images:
+        raise dash.exceptions.PreventUpdate
+
+    selected_indices = [
+        i for i, val in enumerate(selected_images) if val == ["checked"]
+    ]
+    images_to_delete = [empty_images[i][0] for i in selected_indices]
+
+    deleted_images = delete_images(images_to_delete)
+
+    # Update the empty_images list
+    updated_empty_images = [
+        img for i, img in enumerate(empty_images) if i not in selected_indices
+    ]
+
+    return updated_empty_images
 
 
 if __name__ == "__main__":
