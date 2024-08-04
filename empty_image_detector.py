@@ -10,8 +10,8 @@ import concurrent.futures
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Default thresholds
-DEFAULT_UNIQUE_COLOR_THRESHOLD = 5
-DEFAULT_COLOR_VARIANCE_THRESHOLD = 0.001
+DEFAULT_UNIQUE_COLOR_THRESHOLD = 2
+DEFAULT_COLOR_VARIANCE_THRESHOLD = 0.01
 
 
 def gpu_worker_init():

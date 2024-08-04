@@ -105,8 +105,6 @@ def create_duplicates_display(duplicate_groups, page, items_per_page):
     # Filter groups to only include those with more than one image
     filtered_groups = [group for group in duplicate_groups if len(group) > 1]
 
-    # Calculate total groups and determine which groups to display on the current page
-    total_groups = len(filtered_groups)
     groups_to_display = filtered_groups[start_idx:end_idx]
 
     global_index = sum(len(group) for group in filtered_groups[:start_idx])
@@ -146,6 +144,22 @@ def fetch_and_check_blurry(
         return image_path, blur_score
     return None
 
+
+custom_spinner_style = """
+@keyframes custom-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+.custom-loader {
+    border: 5px solid #f3f3f3;
+    border-top: 5px solid #3498db;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: custom-spin 1s linear infinite;
+    margin: 20px auto;
+}
+"""
 
 # Define the layout of the app
 app.layout = html.Div(
@@ -412,56 +426,57 @@ app.layout = html.Div(
                             className="mb-2",
                             style={"textAlign": "center"},
                         ),
-                        html.Div(
-                            [
-                                html.Label("Items per page:", className="me-2"),
-                                dcc.Dropdown(
-                                    id="duplicates-items-per-page",
-                                    options=[
-                                        {"label": str(i), "value": i}
-                                        for i in [5, 10, 20, 30, 50]
+                        dcc.Loading(
+                            id="loading-duplicates",
+                            type="circle",
+                            children=[
+                                html.Div(
+                                    [
+                                        html.Label("Items per page:", className="me-2"),
+                                        dcc.Dropdown(
+                                            id="duplicates-items-per-page",
+                                            options=[
+                                                {"label": str(i), "value": i}
+                                                for i in [5, 10, 20, 30, 50]
+                                            ],
+                                            value=20,
+                                            style={"width": "100px"},
+                                        ),
                                     ],
-                                    value=20,
-                                    style={"width": "100px"},
+                                    style={
+                                        "display": "flex",
+                                        "justifyContent": "center",
+                                        "alignItems": "center",
+                                        "marginTop": "20px",
+                                        "marginBottom": "20px",
+                                    },
+                                ),
+                                dbc.Pagination(
+                                    id="duplicates-pagination",
+                                    active_page=1,
+                                    max_value=1,
+                                    first_last=True,
+                                    previous_next=True,
+                                    fully_expanded=False,
+                                    style={
+                                        "justifyContent": "center",
+                                        "overflowX": "auto",
+                                        "whiteSpace": "nowrap",
+                                        "padding": "10px 0",
+                                    },
+                                ),
+                                html.Div(id="duplicates-display"),
+                                dbc.Button(
+                                    "Delete Selected Images",
+                                    id="delete-button",
+                                    color="danger",
+                                    className="mb-2",
                                 ),
                             ],
-                            style={
-                                "display": "flex",
-                                "justifyContent": "center",
-                                "alignItems": "center",
-                                "marginTop": "20px",
-                                "marginBottom": "20px",
-                            },
-                        ),
-                        dbc.Pagination(
-                            id="duplicates-pagination",
-                            active_page=1,
-                            max_value=1,
-                            first_last=True,
-                            previous_next=True,
-                            fully_expanded=False,
-                            style={
-                                "justifyContent": "center",
-                                "overflowX": "auto",
-                                "whiteSpace": "nowrap",
-                                "padding": "10px 0",
-                            },
-                        ),
-                        html.Div(id="duplicates-display"),
-                        dbc.Button(
-                            "Delete Selected Images",
-                            id="delete-button",
-                            color="danger",
-                            className="mb-2",
                         ),
                         dcc.Store(id="folder-path-duplicates"),
                         dcc.Store(id="duplicates-store", data=[]),
                         dcc.Store(id="filtered-duplicates", data=[]),
-                        dcc.Loading(
-                            id="loading-duplicates-detection",
-                            type="default",
-                            children=html.Div(id="loading-output-duplicates"),
-                        ),
                         dcc.Store(id="current-page-images", storage_type="memory"),
                     ],
                     style={"textAlign": "center", "marginBottom": "20px"},
@@ -479,6 +494,13 @@ app.layout = html.Div(
                             "Select Folder for Empty Image Detection",
                             id="select-folder-empty",
                             className="mb-2",
+                        ),
+                        dcc.Loading(
+                            id="loading-empty",
+                            type="circle",
+                            children=[html.Div(id="loading-output-empty")],
+                            color="#119DFF",
+                            style={"marginTop": 20},
                         ),
                         html.Div(
                             [
@@ -526,11 +548,6 @@ app.layout = html.Div(
                                 "margin": "20px auto",
                             },
                         ),
-                        dcc.Loading(
-                            id="loading-empty-detection",
-                            type="default",
-                            children=html.Div(id="loading-output-empty"),
-                        ),
                     ],
                     style={"textAlign": "center", "marginBottom": "50px"},
                 ),
@@ -538,7 +555,6 @@ app.layout = html.Div(
             id="empty-section",
             style={"display": "none"},
         ),
-        # ... (other parts of the layout remain unchanged)
         dcc.Store(id="empty-images-store"),
     ]
 )
@@ -1160,9 +1176,7 @@ app.clientside_callback(
         Output("duplicates-display", "children"),
         Output("filtered-duplicates", "data"),
         Output("duplicates-pagination", "max_value"),
-        Output(
-            "current-page-images", "data"
-        ),  # New output to store current page image paths
+        Output("current-page-images", "data"),
     ],
     [
         Input("folder-path-duplicates", "data"),
@@ -1174,9 +1188,7 @@ app.clientside_callback(
         State("duplicates-store", "data"),
         State("filtered-duplicates", "data"),
         State({"type": "select-checkbox", "index": ALL}, "value"),
-        State(
-            "current-page-images", "data"
-        ),  # New state to get current page image paths
+        State("current-page-images", "data"),
     ],
 )
 def update_duplicates_display(
@@ -1203,6 +1215,7 @@ def update_duplicates_display(
         display, current_page_images = create_duplicates_display(
             filtered_groups, page, items_per_page
         )
+
         return (
             duplicates,
             display,
@@ -1213,7 +1226,7 @@ def update_duplicates_display(
 
     elif button_id == "delete-button":
         if not filtered_duplicates or not current_page_images:
-            return no_update
+            return dash.no_update
 
         # Use the current_page_images to determine which images are on the current page
         selected_files = [
@@ -1276,6 +1289,7 @@ def update_duplicates_display(
             current_page_images,
         )
 
+    # Default return
     return dash.no_update
 
 
@@ -1292,36 +1306,37 @@ def reset_duplicates_page(items_per_page):
     [
         Output("empty-images-store", "data"),
         Output("empty-images-pagination", "max_value"),
+        Output("loading-output-empty", "children"),
     ],
     Input("select-folder-empty", "n_clicks"),
     prevent_initial_call=True,
 )
 def detect_empty_images(n_clicks):
     if n_clicks is None:
-        return dash.no_update, dash.no_update
+        raise dash.exceptions.PreventUpdate
 
     folder_path = select_folder()
     print(f"Selected folder path: {folder_path}")
     if not folder_path:
         print("No folder selected")
-        return [], 1
+        return [], 1, "No folder selected"
 
     try:
         empty_images = find_empty_images(folder_path)
         print(f"Found empty images: {empty_images}")
         if empty_images is None:
             print("find_empty_images returned None")
-            return [], 1
+            return [], 1, "No empty images found"
 
         max_pages = -(-len(empty_images) // 20)  # Ceiling division
         print(f"Max pages: {max_pages}")
-        return empty_images, max_pages
+        return empty_images, max_pages, ""
     except Exception as e:
         print(f"Error in detect_empty_images: {str(e)}")
         import traceback
 
         print(traceback.format_exc())
-        return [], 1
+        return [], 1, f"An error occurred: {str(e)}"
 
 
 @app.callback(
