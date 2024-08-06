@@ -1081,12 +1081,15 @@ def handle_blur_detection_and_deletion(
             )
 
     elif trigger_id == "delete-blurry-button":
+        if not delete_n_clicks:  # Check if the delete button was actually clicked
+            return no_update, no_update, "", no_update
+
         if not filtered_blurry_images or not global_blur_stats:
             return no_update, no_update, "", no_update
 
         start_idx = (active_page - 1) * items_per_page
         selected_indices = [
-            i + start_idx for i, val in enumerate(selected_values) if "checked" in val
+            i + start_idx for i, val in enumerate(selected_values) if val == ["checked"]
         ]
         images_to_delete = [filtered_blurry_images[i] for i in selected_indices]
 
@@ -1322,7 +1325,7 @@ def detect_empty_images(n_clicks):
         return [], 1, "No folder selected"
 
     try:
-        empty_images = find_empty_images(folder_path)
+        empty_images = find_empty_images(folder_path, batch_size=8)
         print(f"Found empty images: {empty_images}")
         if empty_images is None:
             print("find_empty_images returned None")

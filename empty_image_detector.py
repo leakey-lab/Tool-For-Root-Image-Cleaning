@@ -1,195 +1,243 @@
 import os
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import transforms
 from PIL import Image
-from concurrent.futures import ProcessPoolExecutor
-from typing import List, Tuple
-import concurrent.futures
+from typing import List, Tuple, Dict
+from torch.utils.data import Dataset, DataLoader
+import multiprocessing
+from tqdm import tqdm
+import json
+from concurrent.futures import ThreadPoolExecutor
 
 # Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Default thresholds
-DEFAULT_UNIQUE_COLOR_THRESHOLD = 2
-DEFAULT_COLOR_VARIANCE_THRESHOLD = 0.01
+DEFAULT_UNIQUE_COLOR_THRESHOLD = 1
+DEFAULT_COLOR_VARIANCE_THRESHOLD = 0.001
+DEFAULT_BRIGHTNESS_THRESHOLD_LOW = 0.1
+DEFAULT_BRIGHTNESS_THRESHOLD_HIGH = 0.9
 
 
-def gpu_worker_init():
-    if torch.cuda.is_available():
-        torch.cuda.set_device(0)  # Use the first GPU
-    print(
-        f"Worker initialized with device: {torch.cuda.current_device() if torch.cuda.is_available() else 'CPU'}"
-    )
+class EmptyImageDetector(nn.Module):
+    def __init__(self):
+        super(EmptyImageDetector, self).__init__()
+
+    def forward(
+        self, batch_tensors: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        reshaped = batch_tensors.view(
+            batch_tensors.shape[0], batch_tensors.shape[1], -1
+        )
+        unique_colors = [torch.unique(img, dim=1) for img in reshaped]
+        unique_color_counts = torch.tensor(
+            [uc.shape[1] for uc in unique_colors], device=device
+        )
+        color_variances = torch.var(reshaped, dim=2).mean(dim=1)
+        brightness = torch.mean(batch_tensors, dim=(1, 2, 3))
+
+        return unique_color_counts, color_variances, brightness
 
 
-def analyze_image(image_tensor: torch.Tensor) -> Tuple[int, float]:
-    """
-    Analyze an image tensor to get unique color count and color variance.
+class ImageDataset(Dataset):
+    def __init__(self, image_paths):
+        self.image_paths = image_paths
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+            ]
+        )
 
-    Args:
-    image_tensor (torch.Tensor): Tensor representation of the image.
+    def __len__(self):
+        return len(self.image_paths)
 
-    Returns:
-    tuple: (unique_color_count, color_variance)
-    """
-    # Ensure the tensor is on the correct device
-    image_tensor = image_tensor.to(device)
-
-    # Reshape the tensor to (channels, height * width)
-    reshaped = image_tensor.view(image_tensor.shape[0], -1)
-
-    # Compute unique colors
-    unique_colors = torch.unique(reshaped, dim=1)
-    unique_color_count = unique_colors.shape[1]
-
-    # Compute color variance
-    color_variance = torch.var(reshaped).item()
-
-    return unique_color_count, color_variance
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        try:
+            with Image.open(image_path) as img:
+                image_tensor = self.transform(img)
+            return image_path, image_tensor
+        except Exception as e:
+            print(f"Error loading image {image_path}: {e}")
+            return image_path, torch.zeros((3, 224, 224))
 
 
-def is_empty_image(
-    unique_color_count: int,
-    color_variance: float,
+def is_empty_image_batch(
+    unique_color_counts: torch.Tensor,
+    color_variances: torch.Tensor,
+    brightness: torch.Tensor,
     unique_color_threshold: int,
     color_variance_threshold: float,
-) -> bool:
-    """
-    Determine if an image is empty based on unique color count and color variance.
-
-    Args:
-    unique_color_count (int): Number of unique colors in the image.
-    color_variance (float): Variance of color values in the image.
-    unique_color_threshold (int): Threshold for unique color count.
-    color_variance_threshold (float): Threshold for color variance.
-
-    Returns:
-    bool: True if the image is considered empty, False otherwise.
-    """
+    brightness_threshold_low: float,
+    brightness_threshold_high: float,
+) -> torch.Tensor:
     return (
-        unique_color_count < unique_color_threshold
-        or color_variance < color_variance_threshold
+        (unique_color_counts < unique_color_threshold)
+        | (color_variances < color_variance_threshold)
+        | (brightness < brightness_threshold_low)
+        | (brightness > brightness_threshold_high)
     )
 
 
-def process_image(
-    image_path: str, unique_color_threshold: int, color_variance_threshold: float
-) -> Tuple[str, bool, int, float]:
-    """
-    Process a single image to determine if it's empty.
+def process_image_batch(batch_paths, batch_tensors, detector, thresholds):
+    with torch.no_grad():
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            unique_color_counts, color_variances, brightness = detector(batch_tensors)
 
-    Args:
-    image_path (str): Path to the image file.
-    unique_color_threshold (int): Threshold for unique color count.
-    color_variance_threshold (float): Threshold for color variance.
+    is_empty = is_empty_image_batch(
+        unique_color_counts,
+        color_variances,
+        brightness,
+        thresholds["unique_color_threshold"],
+        thresholds["color_variance_threshold"],
+        thresholds["brightness_threshold_low"],
+        thresholds["brightness_threshold_high"],
+    )
 
-    Returns:
-    tuple: (image_path, is_empty, unique_color_count, color_variance)
-    """
-    try:
-        # Ensure we're using the correct device for this process
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    results = {
+        os.path.normpath(path): (empty.item(), count.item(), var.item(), bright.item())
+        for path, empty, count, var, bright in zip(
+            batch_paths, is_empty, unique_color_counts, color_variances, brightness
+        )
+    }
 
-        # Open image
-        with Image.open(image_path) as image:
-            # Convert image to tensor
-            transform = transforms.Compose([transforms.ToTensor()])
-            image_tensor = transform(image).to(device)
+    return results
 
-            with torch.no_grad():
-                unique_color_count, color_variance = analyze_image(image_tensor)
-                is_empty = is_empty_image(
-                    unique_color_count,
-                    color_variance,
-                    unique_color_threshold,
-                    color_variance_threshold,
-                )
 
-        return image_path, is_empty, unique_color_count, color_variance
+def compute_and_store_empty_image_scores(
+    image_paths: List[str],
+    unique_color_threshold: int = DEFAULT_UNIQUE_COLOR_THRESHOLD,
+    color_variance_threshold: float = DEFAULT_COLOR_VARIANCE_THRESHOLD,
+    brightness_threshold_low: float = DEFAULT_BRIGHTNESS_THRESHOLD_LOW,
+    brightness_threshold_high: float = DEFAULT_BRIGHTNESS_THRESHOLD_HIGH,
+    batch_size: int = 64,
+    cache_file: str = None,
+) -> Dict[str, Tuple[bool, int, float, float]]:
+    if cache_file is None:
+        cache_file = os.path.join(
+            os.path.dirname(image_paths[0]), "empty_image_scores_cache.json"
+        )
 
-    except Exception as e:
-        print(f"Error processing image {image_path}: {e}")
-        return image_path, True, 0, 0.0
+    # Load existing cache if it exists
+    if os.path.exists(cache_file):
+        with open(cache_file, "r") as f:
+            cached_scores = json.load(f)
+    else:
+        cached_scores = {}
+
+    # Identify which images need processing
+    images_to_process = [
+        img for img in image_paths if os.path.normpath(img) not in cached_scores
+    ]
+
+    if images_to_process:
+        dataset = ImageDataset(images_to_process)
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=multiprocessing.cpu_count(),
+            pin_memory=True,
+        )
+
+        detector = EmptyImageDetector().to(device)
+        thresholds = {
+            "unique_color_threshold": unique_color_threshold,
+            "color_variance_threshold": color_variance_threshold,
+            "brightness_threshold_low": brightness_threshold_low,
+            "brightness_threshold_high": brightness_threshold_high,
+        }
+
+        new_scores = {}
+        for batch_paths, batch_tensors in tqdm(dataloader, desc="Processing batches"):
+            batch_tensors = batch_tensors.to(device)
+            batch_results = process_image_batch(
+                batch_paths, batch_tensors, detector, thresholds
+            )
+            new_scores.update(batch_results)
+
+        # Update cache with new scores
+        cached_scores.update(new_scores)
+
+        # Save updated cache
+        with open(cache_file, "w") as f:
+            json.dump(cached_scores, f)
+
+    # Return all scores (cached + newly computed)
+    return {
+        os.path.normpath(img): cached_scores[os.path.normpath(img)]
+        for img in image_paths
+    }
+
+
+def is_cache_valid(image_paths, cache_file):
+    if not os.path.exists(cache_file):
+        return False
+
+    with open(cache_file, "r") as f:
+        cached_scores = json.load(f)
+
+    for img in image_paths:
+        img_path = os.path.normpath(img)
+        if img_path not in cached_scores:
+            return False
+        if os.path.getmtime(img) > os.path.getmtime(cache_file):
+            return False
+
+    return True
 
 
 def find_empty_images(
     directory: str,
     unique_color_threshold: int = DEFAULT_UNIQUE_COLOR_THRESHOLD,
     color_variance_threshold: float = DEFAULT_COLOR_VARIANCE_THRESHOLD,
-    batch_size: int = 8,
-) -> List[Tuple[str, bool, int, float]]:
-    """
-    Find empty images in the given directory.
-
-    Args:
-    directory (str): Path to the directory containing images.
-    unique_color_threshold (int): Threshold for unique color count.
-    color_variance_threshold (float): Threshold for color variance.
-    batch_size (int): Number of images to process in each batch.
-
-    Returns:
-    list: List of tuples (path, is_empty, unique_color_count, color_variance) for all images.
-    """
+    brightness_threshold_low: float = DEFAULT_BRIGHTNESS_THRESHOLD_LOW,
+    brightness_threshold_high: float = DEFAULT_BRIGHTNESS_THRESHOLD_HIGH,
+    batch_size: int = 64,
+) -> List[Tuple[str, bool, int, float, float]]:
     image_paths = [
         os.path.join(directory, f)
         for f in os.listdir(directory)
         if f.lower().endswith((".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"))
     ]
 
-    results = []
-    with ProcessPoolExecutor(initializer=gpu_worker_init) as executor:
-        future_to_path = {
-            executor.submit(
-                process_image, path, unique_color_threshold, color_variance_threshold
-            ): path
-            for path in image_paths
-        }
-        for future in concurrent.futures.as_completed(future_to_path):
-            path = future_to_path[future]
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as exc:
-                print(f"{path} generated an exception: {exc}")
+    cache_file = os.path.join(directory, "empty_image_scores_cache.json")
 
-    # Filter results to only include empty images
-    empty_images = [result for result in results if result[1]]  # result[1] is is_empty
+    if not is_cache_valid(image_paths, cache_file):
+        scores = compute_and_store_empty_image_scores(
+            image_paths,
+            unique_color_threshold,
+            color_variance_threshold,
+            brightness_threshold_low,
+            brightness_threshold_high,
+            batch_size,
+            cache_file,
+        )
+    else:
+        with open(cache_file, "r") as f:
+            scores = json.load(f)
+
+    empty_images = [(path, *score) for path, score in scores.items() if score[0]]
 
     print(
-        f"Found {len(empty_images)} empty images out of {len(image_paths)} total images."
+        f"Found {len(empty_images)} empty/bright/dark images out of {len(image_paths)} total images."
     )
     return empty_images
 
 
 def get_paged_empty_images(
-    image_results: List[Tuple[str, bool, int, float]], page: int, items_per_page: int
-) -> List[Tuple[str, bool, int, float]]:
-    """
-    Get a specific page of empty image results.
-
-    Args:
-    image_results (list): List of tuples (path, is_empty, unique_color_count, color_variance) for all images.
-    page (int): The page number to retrieve.
-    items_per_page (int): Number of items to display per page.
-
-    Returns:
-    list: A subset of image_results for the specified page.
-    """
+    image_results: List[Tuple[str, bool, int, float, float]],
+    page: int,
+    items_per_page: int,
+) -> List[Tuple[str, bool, int, float, float]]:
     start_idx = (page - 1) * items_per_page
     end_idx = start_idx + items_per_page
     return image_results[start_idx:end_idx]
 
 
 def delete_images(image_paths: List[str]) -> List[str]:
-    """
-    Delete the specified images.
-
-    Args:
-    image_paths (list): List of paths to images to be deleted.
-
-    Returns:
-    list: List of successfully deleted image paths.
-    """
     deleted = []
     for path in image_paths:
         try:
