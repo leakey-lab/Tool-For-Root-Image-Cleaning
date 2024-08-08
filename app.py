@@ -1555,4 +1555,4 @@ def delete_selected_empty_images(n_clicks, empty_images, selected_images):
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run_server(debug=False)
