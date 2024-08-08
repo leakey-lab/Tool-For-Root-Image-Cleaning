@@ -739,7 +739,6 @@ def display_blur_distribution(blur_stats_data, blur_threshold):
 
     blur_values = list(blur_stats_data["blur_scores"].values())
 
-    # Check if blur_values is empty or contains None
     if not blur_values or any(v is None for v in blur_values):
         print(f"Warning: Invalid blur values detected: {blur_values}")
         return go.Figure(), {"display": "none"}
@@ -751,56 +750,107 @@ def display_blur_distribution(blur_stats_data, blur_threshold):
         print("Warning: Mean or standard deviation is None")
         return go.Figure(), {"display": "none"}
 
-    # KDE plot
-    print(f"thing in blur_values {len(blur_values)}")
-
-    kde = gaussian_kde(blur_values)
-    x = np.linspace(min(blur_values), max(blur_values), 1000)
-    y = kde(x)
-
+    # Create histogram
     fig = go.Figure()
+    hist, bin_edges = np.histogram(blur_values, bins="auto", density=False)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    fig.add_trace(go.Bar(x=bin_centers, y=hist, name="Histogram", opacity=0.7))
+
+    # Create KDE
+    kde = gaussian_kde(blur_values)
+    x_range = np.linspace(min(blur_values), max(blur_values), 1000)
+    y_kde = kde(x_range)
+
+    # Scale KDE to match histogram height
+    hist_max = max(hist)
+    kde_max = max(y_kde)
+    if kde_max > 0:  # Prevent division by zero
+        scaling_factor = hist_max / kde_max
+        y_kde_scaled = y_kde * scaling_factor
+    else:
+        y_kde_scaled = y_kde
+
     fig.add_trace(
-        go.Scatter(x=x, y=y, mode="lines", line=dict(color="blue"), name="Density")
+        go.Scatter(
+            x=x_range, y=y_kde_scaled, mode="lines", name="KDE", line=dict(color="red")
+        )
     )
 
-    fig.add_vline(
-        x=mean_val, line=dict(color="red", dash="dash"), name=f"Mean: {mean_val:.2f}"
-    )
-    fig.add_vline(
-        x=mean_val - std_val,
-        line=dict(color="green", dash="dash"),
-        name=f"Mean - STD: {mean_val - std_val:.2f}",
-    )
-    fig.add_vline(
-        x=mean_val + std_val,
-        line=dict(color="green", dash="dash"),
-        name=f"Mean + STD: {mean_val + std_val:.2f}",
-    )
-    fig.add_vline(
-        x=mean_val - 2 * std_val,
-        line=dict(color="green", dash="dash"),
-        name=f"Mean - 2*STD: {mean_val - 2 * std_val:.2f}",
-    )
-    # fig.add_vline(
-    #     x=mean_val + 2 * std_val,
-    #     line=dict(color="green", dash="dash"),
-    #     name=f"Mean + 2*STD: {mean_val + 2 * std_val:.2f}",
-    # )
+    # Add vertical lines with labels
+    lines = [
+        (mean_val - 2 * std_val, "blue", "Mean - 2σ"),
+        (mean_val - std_val, "green", "Mean - σ"),
+        (mean_val, "red", "Mean"),
+        (mean_val + std_val, "green", "Mean + σ"),
+        (mean_val + 2 * std_val, "blue", "Mean + 2σ"),
+    ]
 
-    # Add a vertical line for the current blur threshold
+    for i, (x, color, label) in enumerate(lines):
+        fig.add_vline(x=x, line=dict(color=color, dash="dash"), name=label)
+        y_position = 1.05 + (i % 2) * 0.05  # Stagger labels vertically
+        fig.add_annotation(
+            x=x,
+            y=y_position,
+            yref="paper",
+            text=label,
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=2,
+            arrowcolor=color,
+            ax=0,
+            ay=-40,
+            bgcolor="white",
+            opacity=0.8,
+        )
+
+    # Add threshold line
     threshold_line_position = mean_val - blur_threshold * std_val
     fig.add_vline(
         x=threshold_line_position,
         line=dict(color="purple", dash="dash"),
-        name=f"Threshold: {threshold_line_position:.2f}",
+        name="Threshold",
+    )
+    fig.add_annotation(
+        x=threshold_line_position,
+        y=1.15,
+        yref="paper",
+        text="Threshold",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1,
+        arrowwidth=2,
+        arrowcolor="purple",
+        ax=0,
+        ay=-40,
+        bgcolor="white",
+        opacity=0.8,
     )
 
+    # Auto-scaling for x-axis
+    x_min = min(blur_values)
+    x_max = max(blur_values)
+    x_range = x_max - x_min
+    x_margin = x_range * 0.1  # Add 10% margin on each side
+    x_axis_min = max(0, x_min - x_margin)  # Ensure x_axis_min is not negative
+    x_axis_max = x_max + x_margin
+
     fig.update_layout(
-        title="Distribution of Blur Values",
-        xaxis_title="Frequency",
-        yaxis_title="Blur Values",
+        title=dict(
+            text="Distribution of Blur Values",
+            y=0.95,
+            x=0.5,
+            xanchor="center",
+            yanchor="top",
+        ),
+        xaxis_title="Blur Values",
+        yaxis_title="Frequency",
         showlegend=True,
         plot_bgcolor="white",
+        xaxis=dict(range=[x_axis_min, x_axis_max]),
+        margin=dict(t=150),
+        autosize=True,
+        height=600,
     )
 
     return fig, {"display": "block"}
@@ -1429,7 +1479,7 @@ def display_empty_images(empty_images, page, items_per_page):
         return html.Div(
             [
                 html.H5(
-                    f"Displaying {len(paged_images)} of {len(empty_images)} images with unique count < 10",
+                    f"Displaying {len(paged_images)} of {len(empty_images)}",
                     className="text-center mb-4",
                 ),
                 image_grid,
