@@ -146,6 +146,7 @@ This application is not compatible with Apple Silicon devices due to CUDA requir
 - Missing tube analysis
 - Blur detection and analysis
 - Duplicate image identification
+- Empty Image Detection
 
 ## Note
 
