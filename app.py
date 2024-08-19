@@ -1296,7 +1296,7 @@ def display_empty_images(
             html.Div(
                 [
                     html.H5(
-                        f"Displaying {page*len(paged_images)} of {total_filtered} images matching the criteria",
+                        f"Displaying {(page-1)*20 + len(paged_images)} of {total_filtered} images matching the criteria",
                         className="text-center mb-4",
                     ),
                     image_grid,
