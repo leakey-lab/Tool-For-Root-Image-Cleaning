@@ -167,14 +167,14 @@ layout = html.Div(
                         ),
                         html.Div(
                             [
-                                html.Label("Adjust Blur Threshold:", className="mb-1"),
+                                html.Label("Blur sensitivity (offset)", className="mb-1"),
                                 dcc.Slider(
                                     id="blur-threshold-slider",
-                                    min=0,
-                                    max=3,
+                                    min=-1,
+                                    max=1,
                                     step=0.05,
-                                    value=1.5,
-                                    marks={i: f"{i}" for i in range(0, 4)},
+                                    value=0,
+                                    marks={-1: "−1", 0: "0", 1: "+1"},
                                     tooltip={
                                         "placement": "bottom",
                                         "always_visible": True,
@@ -345,105 +345,16 @@ layout = html.Div(
                         ),
                         html.Div(
                             [
-                                html.Label("Unique Color Threshold:"),
-                                dcc.Slider(
-                                    id="unique-color-threshold",
-                                    min=1,
-                                    max=10,
-                                    step=1,
-                                    value=DEFAULT_UNIQUE_COLOR_THRESHOLD,
-                                    marks={i: str(i) for i in range(1, 11)},
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": True,
-                                    },
+                                html.Label(
+                                    "Emptiness sensitivity (− stricter / + looser):"
                                 ),
-                                html.Label("Color Variance Threshold:"),
                                 dcc.Slider(
-                                    id="color-variance-threshold",
-                                    min=0,
-                                    max=0.01,
-                                    step=0.0001,
-                                    value=DEFAULT_COLOR_VARIANCE_THRESHOLD,
-                                    marks={
-                                        i / 1000: f"{i/1000:.4f}"
-                                        for i in range(0, 11, 2)
-                                    },
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": True,
-                                    },
-                                ),
-                                html.Label("Brightness Threshold (Low):"),
-                                dcc.Slider(
-                                    id="brightness-threshold-low",
-                                    min=0,
-                                    max=0.5,
-                                    step=0.01,
-                                    value=DEFAULT_BRIGHTNESS_THRESHOLD_LOW,
-                                    marks={
-                                        i / 10: f"{i/10:.1f}" for i in range(0, 6, 1)
-                                    },
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": True,
-                                    },
-                                ),
-                                html.Label("Brightness Threshold (High):"),
-                                dcc.Slider(
-                                    id="brightness-threshold-high",
-                                    min=0.5,
+                                    id="empty-sensitivity",
+                                    min=-1,
                                     max=1,
-                                    step=0.01,
-                                    value=DEFAULT_BRIGHTNESS_THRESHOLD_HIGH,
-                                    marks={
-                                        i / 10: f"{i/10:.1f}" for i in range(5, 11, 1)
-                                    },
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": True,
-                                    },
-                                ),
-                                html.Label("White Pixel Ratio Threshold:"),
-                                dcc.Slider(
-                                    id="white-pixel-ratio-threshold",
-                                    min=0.5,
-                                    max=1,
-                                    step=0.01,
-                                    value=DEFAULT_WHITE_PIXEL_RATIO_THRESHOLD,
-                                    marks={
-                                        i / 10: f"{i/10:.1f}" for i in range(5, 11, 1)
-                                    },
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": True,
-                                    },
-                                ),
-                                html.Label("Dark Pixel Ratio Threshold:"),
-                                dcc.Slider(
-                                    id="dark-pixel-ratio-threshold",
-                                    min=0.5,
-                                    max=1,
-                                    step=0.01,
-                                    value=DEFAULT_DARK_PIXEL_RATIO_THRESHOLD,
-                                    marks={
-                                        i / 10: f"{i/10:.1f}" for i in range(5, 11, 1)
-                                    },
-                                    tooltip={
-                                        "placement": "bottom",
-                                        "always_visible": True,
-                                    },
-                                ),
-                                html.Label("Bright Pixel Ratio Threshold:"),
-                                dcc.Slider(
-                                    id="bright-pixel-ratio-threshold",
-                                    min=0.5,
-                                    max=1,
-                                    step=0.01,
-                                    value=DEFAULT_BRIGHT_PIXEL_RATIO_THRESHOLD,
-                                    marks={
-                                        i / 10: f"{i/10:.1f}" for i in range(5, 11, 1)
-                                    },
+                                    step=0.05,
+                                    value=0,
+                                    marks={-1: "−1", 0: "0", 1: "+1"},
                                     tooltip={
                                         "placement": "bottom",
                                         "always_visible": True,

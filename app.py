@@ -1,3 +1,6 @@
+# Detection methods & citations: see image_metrics.py / thresholds.py module headers
+# and IMAGE_CLEANING_REVIEW.md — Tenengrad (Pertuz 2013), Frangi vesselness (1998),
+# Otsu thresholding (1979), Rec.601 luma, clipping-fraction exposure.
 import dash
 from dash import html, dcc, no_update
 from dash.dependencies import Input, Output, State, ALL, MATCH
@@ -18,6 +21,7 @@ from blur_detector import (
     calculate_global_statistics,
     is_cache_valid,
 )
+import thresholds
 import json
 import torch
 from empty_image_detector import (
@@ -63,11 +67,34 @@ def get_cuda_device():
 
 def encode_image(image_file):
     try:
+        if not os.path.exists(image_file):
+            print(f"File not found: {image_file}")
+            return ""
+        
+        # Determine image format from file extension
+        file_ext = os.path.splitext(image_file)[1].lower()
+        if file_ext in ['.jpg', '.jpeg']:
+            mime_type = "image/jpeg"
+        elif file_ext == '.png':
+            mime_type = "image/png"
+        elif file_ext == '.gif':
+            mime_type = "image/gif"
+        elif file_ext == '.bmp':
+            mime_type = "image/bmp"
+        elif file_ext == '.webp':
+            mime_type = "image/webp"
+        else:
+            # Default to jpeg if unknown format
+            mime_type = "image/jpeg"
+        
         with open(image_file, "rb") as f:
             encoded = base64.b64encode(f.read()).decode("utf-8")
-        return f"data:image/jpeg;base64,{encoded}"
+        return f"data:{mime_type};base64,{encoded}"
     except FileNotFoundError:
         print(f"File not found: {image_file}")
+        return ""
+    except Exception as e:
+        print(f"Error encoding image {image_file}: {e}")
         return ""
 
 
@@ -143,18 +170,6 @@ def create_duplicates_display(duplicate_groups, page, items_per_page):
 
     display = html.Div(children)
     return display, current_page_images
-
-
-def fetch_and_check_blurry(
-    image_path, blur_threshold, blur_scores, mean_blur, std_blur
-):
-
-    blur_score = blur_scores.get(os.path.normpath(image_path))
-    lower_bound = mean_blur - blur_threshold * std_blur
-    is_blurry = blur_score < lower_bound
-    if is_blurry:
-        return image_path, blur_score
-    return None
 
 
 custom_spinner_style = """
@@ -340,6 +355,8 @@ def identify_missing_tubes(start, end, existing_tubes):
 )
 def select_folder_for_blur(n_clicks):
     folder_path = select_folder()
+    if not folder_path:
+        return no_update
     return {"path": folder_path}
 
 
@@ -354,85 +371,91 @@ def display_blur_distribution(blur_stats_data, blur_threshold):
     if not blur_stats_data or "blur_scores" not in blur_stats_data:
         return go.Figure(), {"display": "none"}
 
-    blur_values = list(blur_stats_data["blur_scores"].values())
+    # Extract and filter blur values - remove None, NaN, and inf
+    blur_values_raw = list(blur_stats_data["blur_scores"].values())
+    blur_values = [
+        v for v in blur_values_raw
+        if v is not None
+        and isinstance(v, (int, float))
+        and not np.isnan(v)
+        and not np.isinf(v)
+    ]
 
-    if not blur_values or any(v is None for v in blur_values):
-        print(f"Warning: Invalid blur values detected: {blur_values}")
+    if not blur_values or len(blur_values) < 2:
+        print(f"Warning: Not enough valid blur values. Found {len(blur_values)} valid values out of {len(blur_values_raw)} total.")
         return go.Figure(), {"display": "none"}
 
     mean_val = blur_stats_data.get("mean_blur")
     std_val = blur_stats_data.get("std_blur")
 
-    if mean_val is None or std_val is None:
-        print("Warning: Mean or standard deviation is None")
+    if mean_val is None or std_val is None or np.isnan(mean_val) or np.isnan(std_val):
+        print("Warning: Mean or standard deviation is None or NaN")
         return go.Figure(), {"display": "none"}
 
     # Create histogram
     fig = go.Figure()
-    hist, bin_edges = np.histogram(blur_values, bins="auto", density=False)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    fig.add_trace(go.Bar(x=bin_centers, y=hist, name="Histogram", opacity=0.7))
+    try:
+        hist, bin_edges = np.histogram(blur_values, bins="auto", density=False)
+        if len(hist) > 0 and len(bin_edges) > 1:
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            fig.add_trace(go.Bar(x=bin_centers, y=hist, name="Histogram", opacity=0.7))
+        else:
+            print("Warning: Empty histogram generated")
+            # Still create a simple scatter plot if histogram fails
+            fig.add_trace(go.Scatter(x=blur_values, y=[1]*len(blur_values), mode='markers', name="Blur Values", opacity=0.7))
+    except Exception as e:
+        print(f"Warning: Error creating histogram: {e}")
+        # Fallback: create a simple scatter plot
+        fig.add_trace(go.Scatter(x=blur_values, y=[1]*len(blur_values), mode='markers', name="Blur Values", opacity=0.7))
 
-    # Create KDE
-    kde = gaussian_kde(blur_values)
-    x_range = np.linspace(min(blur_values), max(blur_values), 1000)
-    y_kde = kde(x_range)
+    # Create KDE only if we have enough values and they're not all the same
+    try:
+        if len(blur_values) >= 2 and np.std(blur_values) > 1e-10:  # Check for variance
+            kde = gaussian_kde(blur_values)
+            kde_x_range = np.linspace(min(blur_values), max(blur_values), 1000)
+            y_kde = kde(kde_x_range)
 
-    # Scale KDE to match histogram height
-    hist_max = max(hist)
-    kde_max = max(y_kde)
-    if kde_max > 0:  # Prevent division by zero
-        scaling_factor = hist_max / kde_max
-        y_kde_scaled = y_kde * scaling_factor
-    else:
-        y_kde_scaled = y_kde
+            # Scale KDE to match histogram height
+            hist_max = max(hist) if len(hist) > 0 else 1
+            kde_max = max(y_kde) if len(y_kde) > 0 else 1
+            if kde_max > 0:  # Prevent division by zero
+                scaling_factor = hist_max / kde_max
+                y_kde_scaled = y_kde * scaling_factor
+            else:
+                y_kde_scaled = y_kde
 
-    fig.add_trace(
-        go.Scatter(
-            x=x_range, y=y_kde_scaled, mode="lines", name="KDE", line=dict(color="red")
-        )
-    )
+            fig.add_trace(
+                go.Scatter(
+                    x=kde_x_range, y=y_kde_scaled, mode="lines", name="KDE", line=dict(color="red")
+                )
+            )
+        else:
+            print("Warning: Cannot create KDE - insufficient variance in blur values")
+    except Exception as e:
+        print(f"Warning: Error creating KDE: {e}")
+        # Continue without KDE - histogram will still be shown
 
-    # Add vertical lines with labels
-    lines = [
-        (mean_val - 2 * std_val, "blue", "Mean - 2σ"),
-        (mean_val - std_val, "green", "Mean - σ"),
-        (mean_val, "red", "Mean"),
-        (mean_val + std_val, "green", "Mean + σ"),
-        (mean_val + 2 * std_val, "blue", "Mean + 2σ"),
-    ]
+    # Add a single threshold (cut) line at the adaptive Otsu cut + slider offset.
+    # The histogram is now sharpness (tenengrad_p90; higher = sharper), so the cut
+    # is otsu_cut + blur_threshold*0.5*score_spread (same back-compat fallback as
+    # the blurry-image filter).
+    otsu_cut = blur_stats_data.get("otsu_cut")
+    score_spread = blur_stats_data.get("score_spread", 1.0)
+    if otsu_cut is None:  # back-compat / not yet computed
+        otsu_cut = mean_val - 1.5 * std_val
+        score_spread = std_val or 1.0
+    cut = otsu_cut + blur_threshold * 0.5 * score_spread
 
-    for i, (x, color, label) in enumerate(lines):
-        fig.add_vline(x=x, line=dict(color=color, dash="dash"), name=label)
-        y_position = 1.05 + (i % 2) * 0.05  # Stagger labels vertically
-        fig.add_annotation(
-            x=x,
-            y=y_position,
-            yref="paper",
-            text=label,
-            showarrow=True,
-            arrowhead=2,
-            arrowsize=1,
-            arrowwidth=2,
-            arrowcolor=color,
-            ax=0,
-            ay=-40,
-            bgcolor="white",
-            opacity=0.8,
-        )
-
-    # Add threshold line
-    threshold_line_position = mean_val - blur_threshold * std_val
     fig.add_vline(
-        x=threshold_line_position,
+        x=cut,
         line=dict(color="purple", dash="dash"),
         name="Threshold",
     )
     fig.add_annotation(
-        x=threshold_line_position,
+        x=cut,
         y=1.15,
         yref="paper",
-        text="Threshold",
+        text="Threshold (cut)",
         showarrow=True,
         arrowhead=2,
         arrowsize=1,
@@ -454,13 +477,13 @@ def display_blur_distribution(blur_stats_data, blur_threshold):
 
     fig.update_layout(
         title=dict(
-            text="Distribution of Blur Values",
+            text="Distribution of Sharpness (Tenengrad) Scores",
             y=0.95,
             x=0.5,
             xanchor="center",
             yanchor="top",
         ),
-        xaxis_title="Blur Values",
+        xaxis_title="Sharpness Score (higher = sharper)",
         yaxis_title="Frequency",
         showlegend=True,
         plot_bgcolor="white",
@@ -523,25 +546,49 @@ def update_warning(items_per_page):
 def display_blurry_images(
     blurred_images, blur_threshold, blur_stats, page, items_per_page
 ):
-    if not blurred_images or not blur_stats:
-        return html.Div("No blurry images found."), {"display": "none"}, [], 1
+    if not blur_stats:
+        return html.Div("No blur statistics available. Please run blur detection first."), {"display": "none"}, [], 1
 
     blur_scores_global = blur_stats["blur_scores"]
     mean_blur_global = blur_stats["mean_blur"]
     std_blur_global = blur_stats["std_blur"]
 
+    # Check if statistics are valid
+    if mean_blur_global is None or std_blur_global is None or np.isnan(mean_blur_global) or np.isnan(std_blur_global):
+        return html.Div("Invalid blur statistics. Please re-run blur detection."), {"display": "none"}, [], 1
+
+    # Adaptive cut: otsu_cut + offset (slider is an offset in [-1, 1]). Scores are
+    # tenengrad_p90 (higher = sharper), so blurry stays `score < cut`.
+    otsu_cut = blur_stats.get("otsu_cut")
+    score_spread = blur_stats.get("score_spread", 1.0)
+    if otsu_cut is None:  # back-compat / not yet computed
+        otsu_cut = mean_blur_global - 1.5 * std_blur_global
+        score_spread = std_blur_global or 1.0
+    cut = otsu_cut + blur_threshold * 0.5 * score_spread
+
+    # Filter from ALL images in blur_scores, not just the already-filtered blurred_images
     filtered_images = []
     blur_val = []
-    for image, score in zip(blurred_images[0], blurred_images[1]):
-        if os.path.exists(image):  # Check if the image file still exists
-            lower_bound = mean_blur_global - blur_threshold * std_blur_global
-            if score < lower_bound:
-                filtered_images.append(image)
-                blur_val.append(score)
+
+    for file_path, blur_score in blur_scores_global.items():
+        if blur_score is not None and not np.isnan(blur_score) and not np.isinf(blur_score):
+            if os.path.exists(file_path):  # Check if the image file still exists
+                if blur_score < cut:
+                    filtered_images.append(file_path)
+                    blur_val.append(blur_score)
 
     # Sort the filtered images by blur score in ascending order
     sorted_images = sorted(zip(filtered_images, blur_val), key=lambda x: x[1])
     filtered_images, blur_val = zip(*sorted_images) if sorted_images else ([], [])
+
+    # Check if no images found
+    if not filtered_images:
+        return (
+            html.Div(f"No blurry images found with offset {blur_threshold:.2f} (cut = {cut:.2f}, otsu_cut = {otsu_cut:.2f}, spread = {score_spread:.2f})"),
+            {"display": "none"},
+            [],
+            1,
+        )
 
     # Pagination
     total_images = len(filtered_images)
@@ -551,13 +598,23 @@ def display_blurry_images(
     page_images = filtered_images[start_idx:end_idx]
     page_blur_val = blur_val[start_idx:end_idx]
 
-    image_grid = html.Div(
-        style={
-            "display": "grid",
-            "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
-            "gap": "10px",
-        },
-        children=[
+    # Build image grid with error handling
+    image_children = []
+    failed_encodings = 0
+    for i, (image, bval) in enumerate(zip(page_images, page_blur_val)):
+        if not os.path.exists(image):
+            print(f"Warning: Image file does not exist: {image}")
+            failed_encodings += 1
+            continue
+        
+        # Encode image and check if it succeeded
+        encoded_src = encode_image(image)
+        if not encoded_src:
+            print(f"Warning: Failed to encode image {image}, skipping")
+            failed_encodings += 1
+            continue
+        
+        image_children.append(
             html.Div(
                 [
                     dcc.Checklist(
@@ -574,7 +631,7 @@ def display_blurry_images(
                     html.Div(
                         [
                             html.Img(
-                                src=encode_image(image),
+                                src=encoded_src,
                                 className="thumbnail",
                                 style={
                                     "height": "200px",
@@ -582,10 +639,12 @@ def display_blurry_images(
                                     "objectFit": "cover",
                                 },
                                 id={"type": "image", "index": i + start_idx},
+                                alt=f"Blurry image {i+1}",
                             ),
                             html.Img(
-                                src=encode_image(image),
+                                src=encoded_src,
                                 className="preview",
+                                alt=f"Blurry image preview {i+1}",
                             ),
                         ],
                         className="hover-for-blur",
@@ -595,9 +654,27 @@ def display_blurry_images(
                 style={"textAlign": "center", "position": "relative"},
                 id={"type": "image-container", "index": i + start_idx},
             )
-            for i, (image, bval) in enumerate(zip(page_images, page_blur_val))
-            if os.path.exists(image)  # Only include images that still exist
-        ],
+        )
+    
+    # If no images were successfully encoded, show a message
+    if not image_children:
+        error_msg = f"No images could be displayed. {failed_encodings} image(s) failed to encode."
+        if failed_encodings == 0:
+            error_msg = "No images found on this page."
+        return (
+            html.Div(error_msg, style={"textAlign": "center", "padding": "20px"}),
+            {"display": "none"},
+            list(filtered_images),
+            total_pages,
+        )
+    
+    image_grid = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fill, minmax(200px, 1fr))",
+            "gap": "10px",
+        },
+        children=image_children,
     )
 
     return (
@@ -672,10 +749,6 @@ def handle_blur_detection_and_deletion(
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
     if trigger_id in {"folder-path", "select-folder-blur", "blur-threshold-slider"}:
-        # Set up the detector with the appropriate device
-        device = get_cuda_device()
-        detector = LaplacianBlurDetector().to(device).eval()
-
         if not folder_data or "path" not in folder_data:
             return no_update, no_update, "", no_update
 
@@ -696,26 +769,47 @@ def handle_blur_detection_and_deletion(
         ]
 
         if not blur_detection_state["completed"]:
-            if is_cache_valid(total_files, cache_file):
-                print("Using cached blur scores")
-                with open(cache_file, "r") as f:
-                    blur_scores_global = json.load(f)
-            else:
-                print("Computing blur scores")
-                blur_scores_global = compute_and_store_blur_scores(
-                    total_files, detector, cache_file=cache_file
-                )
+            # Always call the cache-aware adapter; it handles the unified cache
+            # internally (image_metrics_cache.json) and returns tenengrad_p90
+            # (HIGHER = sharper).
+            print("Computing blur scores")
+            blur_scores_global = compute_and_store_blur_scores(
+                total_files, cache_file=cache_file
+            )
 
             mean_blur_global, std_blur_global = calculate_global_statistics(
                 blur_scores_global
             )
 
+            # Check if statistics are valid
+            if mean_blur_global is None or std_blur_global is None:
+                return (
+                    blur_detection_state,
+                    [[], []],
+                    "Error: Could not calculate blur statistics. Check cache file for invalid values.",
+                    {"blur_scores": blur_scores_global, "mean_blur": None, "std_blur": None},
+                )
+
+            # Compute the adaptive Otsu cut + central spread ONCE and store them.
+            vals = [v for v in blur_scores_global.values() if v is not None and np.isfinite(v)]
+            otsu_cut = thresholds.otsu_threshold(vals, log=True)
+            if otsu_cut is None:
+                otsu_cut = float(np.percentile(vals, 20)) if vals else 0.0
+            score_spread = (
+                float(np.percentile(vals, 90) - np.percentile(vals, 10))
+                if len(vals) >= 2
+                else 1.0
+            )
+
+            # Slider is an OFFSET in [-1, 1]; scores are sharpness (higher=sharper),
+            # so blurry stays `score < cut`.
+            cut = otsu_cut + blur_threshold * 0.5 * score_spread
+
             new_blurred_images, blur_val = [], []
             for file_path in total_files:
                 blur_score = blur_scores_global.get(os.path.normpath(file_path))
-                if blur_score is not None:
-                    lower_bound = mean_blur_global - blur_threshold * std_blur_global
-                    if blur_score < lower_bound:
+                if blur_score is not None and not np.isnan(blur_score) and not np.isinf(blur_score):
+                    if blur_score < cut:
                         new_blurred_images.append(file_path)
                         blur_val.append(blur_score)
 
@@ -724,6 +818,8 @@ def handle_blur_detection_and_deletion(
                 "blur_scores": blur_scores_global,
                 "mean_blur": mean_blur_global,
                 "std_blur": std_blur_global,
+                "otsu_cut": otsu_cut,
+                "score_spread": score_spread,
             }
             return (
                 blur_detection_state,
@@ -733,16 +829,54 @@ def handle_blur_detection_and_deletion(
             )
 
         else:
-            # If already completed, just re-filter based on new threshold
+            # If already completed, just re-filter based on new offset.
+            mean_blur_global = global_blur_stats.get("mean_blur")
+            std_blur_global = global_blur_stats.get("std_blur")
+
+            # Check if statistics are valid
+            if mean_blur_global is None or std_blur_global is None or np.isnan(mean_blur_global) or np.isnan(std_blur_global):
+                # Recalculate statistics if they're invalid
+                mean_blur_global, std_blur_global = calculate_global_statistics(
+                    global_blur_stats["blur_scores"]
+                )
+                if mean_blur_global is None or std_blur_global is None:
+                    return (
+                        blur_detection_state,
+                        [[], []],
+                        "Error: Could not calculate blur statistics. Check cache file for invalid values.",
+                        global_blur_stats,
+                    )
+                # Update the stats
+                global_blur_stats["mean_blur"] = mean_blur_global
+                global_blur_stats["std_blur"] = std_blur_global
+
+            # Read (or back-compat derive) the adaptive cut + spread.
+            otsu_cut = global_blur_stats.get("otsu_cut")
+            score_spread = global_blur_stats.get("score_spread", 1.0)
+            if otsu_cut is None:
+                vals = [
+                    v for v in global_blur_stats["blur_scores"].values()
+                    if v is not None and np.isfinite(v)
+                ]
+                otsu_cut = thresholds.otsu_threshold(vals, log=True)
+                if otsu_cut is None:
+                    otsu_cut = float(np.percentile(vals, 20)) if vals else 0.0
+                score_spread = (
+                    float(np.percentile(vals, 90) - np.percentile(vals, 10))
+                    if len(vals) >= 2
+                    else 1.0
+                )
+                global_blur_stats["otsu_cut"] = otsu_cut
+                global_blur_stats["score_spread"] = score_spread
+
+            cut = otsu_cut + blur_threshold * 0.5 * score_spread
+
             new_blurred_images, blur_val = [], []
             for file_path, blur_score in global_blur_stats["blur_scores"].items():
-                lower_bound = (
-                    global_blur_stats["mean_blur"]
-                    - blur_threshold * global_blur_stats["std_blur"]
-                )
-                if blur_score < lower_bound:
-                    new_blurred_images.append(file_path)
-                    blur_val.append(blur_score)
+                if blur_score is not None and not np.isnan(blur_score) and not np.isinf(blur_score):
+                    if blur_score < cut:
+                        new_blurred_images.append(file_path)
+                        blur_val.append(blur_score)
 
             return (
                 blur_detection_state,
@@ -792,10 +926,25 @@ def handle_blur_detection_and_deletion(
             mean_blur = 0
             std_blur = 0
 
+        # Recompute the adaptive Otsu cut + spread from the updated scores.
+        upd_vals = [
+            v for v in updated_blur_scores.values() if v is not None and np.isfinite(v)
+        ]
+        otsu_cut = thresholds.otsu_threshold(upd_vals, log=True)
+        if otsu_cut is None:
+            otsu_cut = float(np.percentile(upd_vals, 20)) if upd_vals else 0.0
+        score_spread = (
+            float(np.percentile(upd_vals, 90) - np.percentile(upd_vals, 10))
+            if len(upd_vals) >= 2
+            else 1.0
+        )
+
         updated_global_blur_stats = {
             "blur_scores": updated_blur_scores,
             "mean_blur": mean_blur,
             "std_blur": std_blur,
+            "otsu_cut": otsu_cut,
+            "score_spread": score_spread,
         }
 
         # Delete the selected images from the filesystem
@@ -976,341 +1125,184 @@ def reset_duplicates_page(items_per_page):
     return 1
 
 
+def _classified_empty_records(all_records, sens_empty):
+    """Re-derive per-folder thresholds at the given sensitivity, re-classify every
+    record from its cached metrics, and return only DARK/WHITE/EMPTY records,
+    each annotated with a fresh label+reason. The ONE predicate used by display,
+    pagination, and delete so their sets can never diverge."""
+    if not all_records:
+        return []
+    metrics = {r["path"]: r["metrics"] for r in all_records if r.get("metrics")}
+    thr = thresholds.derive_folder_thresholds(metrics, sens_empty=sens_empty)
+    out = []
+    for r in all_records:
+        m = r.get("metrics")
+        if not m:
+            continue
+        label, reason = thresholds.classify(m, thr)
+        if thresholds.is_empty_label(label):
+            out.append({**r, "label": label, "reason": reason})
+    return out
+
+
 @app.callback(
-    [
-        Output("empty-images-store", "data"),
-        Output("empty-images-pagination", "max_value"),
-        Output("loading-output-empty", "children"),
-        Output("all-images-data", "data"),
-        Output("unique-color-threshold", "value"),
-        Output("color-variance-threshold", "value"),
-        Output("brightness-threshold-low", "value"),
-        Output("brightness-threshold-high", "value"),
-        Output("white-pixel-ratio-threshold", "value"),
-        Output("dark-pixel-ratio-threshold", "value"),
-        Output("bright-pixel-ratio-threshold", "value"),
-    ],
-    [
-        Input("select-folder-empty", "n_clicks"),
-        Input("unique-color-threshold", "value"),
-        Input("color-variance-threshold", "value"),
-        Input("brightness-threshold-low", "value"),
-        Input("brightness-threshold-high", "value"),
-        Input("white-pixel-ratio-threshold", "value"),
-        Input("dark-pixel-ratio-threshold", "value"),
-        Input("bright-pixel-ratio-threshold", "value"),
-    ],
-    [State("all-images-data", "data")],
+    Output("all-images-data", "data"),
+    Output("empty-images-pagination", "max_value"),
+    Output("loading-output-empty", "children"),
+    Input("select-folder-empty", "n_clicks"),
     prevent_initial_call=True,
 )
-def detect_empty_images_and_reset_sliders(
-    n_clicks,
-    unique_color_threshold,
-    color_variance_threshold,
-    brightness_threshold_low,
-    brightness_threshold_high,
-    white_pixel_ratio_threshold,
-    dark_pixel_ratio_threshold,
-    bright_pixel_ratio_threshold,
-    all_images_data,
-):
-    ctx = dash.callback_context
-    triggered_input = ctx.triggered[0]["prop_id"].split(".")[0]
-
-    if triggered_input == "select-folder-empty":
-        folder_path = select_folder()
-        print(f"Selected folder path: {folder_path}")
-        if not folder_path:
-            print("No folder selected")
-            return [], 1, "No folder selected", None, *[no_update] * 7
-
-        try:
-            # Set up the detector with the appropriate device
-            device = get_cuda_device()
-            empty_detector = ImprovedEmptyImageDetector().to(device).eval()
-
-            # Process all images and store the results
-            all_images_data = find_empty_images(
-                folder_path,
-                detector=empty_detector,
-            )
-            print(f"Processed {len(all_images_data)} images")
-
-            # Reset sliders to default values
-            return (
-                all_images_data,
-                1,  # Initialize to 1 page
-                "",
-                all_images_data,
-                DEFAULT_UNIQUE_COLOR_THRESHOLD,
-                DEFAULT_COLOR_VARIANCE_THRESHOLD,
-                DEFAULT_BRIGHTNESS_THRESHOLD_LOW,
-                DEFAULT_BRIGHTNESS_THRESHOLD_HIGH,
-                DEFAULT_WHITE_PIXEL_RATIO_THRESHOLD,
-                DEFAULT_DARK_PIXEL_RATIO_THRESHOLD,
-                DEFAULT_BRIGHT_PIXEL_RATIO_THRESHOLD,
-            )
-
-        except Exception as e:
-            print(f"Error in detect_empty_images: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
-            return [], 1, f"An error occurred: {str(e)}", None, *[no_update] * 7
-
-    # Filter images based on current threshold values
-    filtered_images = [
-        img
-        for img in all_images_data
-        if (
-            img[1] < unique_color_threshold
-            and img[2] < color_variance_threshold
-            and (
-                img[3] < brightness_threshold_low or img[3] > brightness_threshold_high
-            )
-            and (
-                img[4] > white_pixel_ratio_threshold
-                or img[5] > dark_pixel_ratio_threshold
-                or img[6] > bright_pixel_ratio_threshold
-            )
-        )
-    ]
-
-    print(f"Found {len(filtered_images)} images matching the criteria")
-    if not filtered_images:
-        return (
-            filtered_images,
-            1,
-            "No images found matching the criteria",
-            all_images_data,
-            *[no_update] * 7,
-        )
-
-    max_pages = -(-len(filtered_images) // 20)  # Ceiling division
-    print(f"Max pages: {max_pages}")
-    return filtered_images, max_pages, "", all_images_data, *[no_update] * 7
+def detect_empty_images(n_clicks):
+    folder_path = select_folder()
+    if not folder_path:
+        return no_update, no_update, "No folder selected"
+    try:
+        records = find_empty_images(folder_path)   # full set with metrics+labels
+        return records, 1, ""
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return [], 1, f"An error occurred: {e}"
 
 
 @app.callback(
     Output("empty-images-output", "children"),
     Output("empty-images-pagination", "max_value", allow_duplicate=True),
-    [
-        Input("all-images-data", "data"),
-        Input("empty-images-pagination", "active_page"),
-        Input("empty-images-per-page", "value"),
-        Input("unique-color-threshold", "value"),
-        Input("color-variance-threshold", "value"),
-        Input("brightness-threshold-low", "value"),
-        Input("brightness-threshold-high", "value"),
-        Input("white-pixel-ratio-threshold", "value"),
-        Input("dark-pixel-ratio-threshold", "value"),
-        Input("bright-pixel-ratio-threshold", "value"),
-    ],
+    Input("all-images-data", "data"),
+    Input("empty-images-pagination", "active_page"),
+    Input("empty-images-per-page", "value"),
+    Input("empty-sensitivity", "value"),
     prevent_initial_call=True,
 )
-def display_empty_images(
-    all_images_data,
-    page,
-    items_per_page,
-    unique_color_threshold,
-    color_variance_threshold,
-    brightness_threshold_low,
-    brightness_threshold_high,
-    white_pixel_ratio_threshold,
-    dark_pixel_ratio_threshold,
-    bright_pixel_ratio_threshold,
-):
-    if not all_images_data or len(all_images_data) == 0:
-        print("No images found in all_images_data")
+def display_empty_images(all_records, page, items_per_page, sensitivity):
+    if not all_records:
         return html.Div("No images found.", className="text-center mt-4"), 1
 
-    try:
-        filtered_images = []
-        reasons = []
+    flagged = _classified_empty_records(all_records, sensitivity or 0.0)
+    total = len(flagged)
+    total_pages = max(1, -(-total // items_per_page))
+    page = min(max(1, page or 1), total_pages)
+    start = (page - 1) * items_per_page
+    end = start + items_per_page
+    paged = flagged[start:end]
 
-        for img in all_images_data:
-            # Unpack image properties
-            (
-                image_path,
-                unique_colors,
-                color_variance,
-                brightness,
-                white_ratio,
-                dark_ratio,
-                bright_ratio,
-            ) = img
+    cards = []
+    for i, rec in enumerate(paged):
+        path = rec["path"]
+        if not os.path.exists(path):
+            continue
+        m = rec.get("metrics") or {}
 
-            # Initialize reason for filtering
-            image_reasons = []
+        def _fmt(key):
+            v = m.get(key)
+            if v is None:
+                return "—"
+            try:
+                return f"{float(v):.4g}"
+            except (TypeError, ValueError):
+                return str(v)
 
-            # Apply thresholds and collect reasons
-            if unique_colors < unique_color_threshold:
-                image_reasons.append(
-                    f"Unique Colors: {unique_colors} < {unique_color_threshold}"
-                )
-            if color_variance < color_variance_threshold:
-                image_reasons.append(
-                    f"Color Variance: {color_variance:.4f} < {color_variance_threshold}"
-                )
-            if brightness < brightness_threshold_low:
-                image_reasons.append(
-                    f"Low Brightness: {brightness:.2f} < {brightness_threshold_low}"
-                )
-            elif brightness > brightness_threshold_high:
-                image_reasons.append(
-                    f"High Brightness: {brightness:.2f} > {brightness_threshold_high}"
-                )
-            if white_ratio > white_pixel_ratio_threshold:
-                image_reasons.append(
-                    f"White Pixel Ratio: {white_ratio:.2f} > {white_pixel_ratio_threshold}"
-                )
-            if dark_ratio > dark_pixel_ratio_threshold:
-                image_reasons.append(
-                    f"Dark Pixel Ratio: {dark_ratio:.2f} > {dark_pixel_ratio_threshold}"
-                )
-            if bright_ratio > bright_pixel_ratio_threshold:
-                image_reasons.append(
-                    f"Bright Pixel Ratio: {bright_ratio:.2f} > {bright_pixel_ratio_threshold}"
-                )
-
-            # If the image meets any of the criteria, include it in the filtered list
-            if image_reasons:
-                filtered_images.append(img)
-                reasons.append(image_reasons)
-
-        total_filtered = len(filtered_images)
-        total_pages = max(1, -(-total_filtered // items_per_page))  # Ceiling division
-        page = min(max(1, page), total_pages)
-        start_idx = (page - 1) * items_per_page
-        end_idx = start_idx + items_per_page
-
-        paged_images = filtered_images[start_idx:end_idx]
-        paged_reasons = reasons[start_idx:end_idx]
-
-        image_grid = html.Div(
-            style={
-                "display": "grid",
-                "gridTemplateColumns": "repeat(auto-fill, minmax(250px, 1fr))",
-                "gap": "20px",
-                "padding": "20px",
-            },
-            children=[
-                html.Div(
-                    [
-                        dbc.Card(
-                            [
-                                dbc.CardImg(
-                                    src=encode_image(img[0]),
-                                    top=True,
-                                    style={"height": "200px", "objectFit": "cover"},
-                                    className="empty-image-hover",
-                                ),
-                                dbc.CardBody(
-                                    [
-                                        html.H6(
-                                            os.path.basename(img[0]),
-                                            className="card-title",
-                                            style={"fontSize": "12px"},
-                                        ),
-                                        html.P(
-                                            f"Unique Colors: {img[1]}",
-                                            className="card-text",
-                                            style={"fontSize": "11px"},
-                                        ),
-                                        html.P(
-                                            f"Color Variance: {img[2]:.4f}",
-                                            className="card-text",
-                                            style={"fontSize": "11px"},
-                                        ),
-                                        html.P(
-                                            f"Brightness: {img[3]:.2f}",
-                                            className="card-text",
-                                            style={"fontSize": "11px"},
-                                        ),
-                                        html.P(
-                                            f"White Ratio: {img[4]:.2f}",
-                                            className="card-text",
-                                            style={"fontSize": "11px"},
-                                        ),
-                                        html.P(
-                                            f"Dark Ratio: {img[5]:.2f}",
-                                            className="card-text",
-                                            style={"fontSize": "11px"},
-                                        ),
-                                        html.P(
-                                            f"Bright Ratio: {img[6]:.2f}",
-                                            className="card-text",
-                                            style={"fontSize": "11px"},
-                                        ),
-                                        html.Div(
-                                            [
-                                                html.P(
-                                                    "Reasons:",
-                                                    style={
-                                                        "fontWeight": "bold",
-                                                        "marginBottom": "5px",
-                                                    },
-                                                ),
-                                                html.Ul(
-                                                    [
-                                                        html.Li(reason)
-                                                        for reason in img_reasons
-                                                    ],
-                                                    style={
-                                                        "fontSize": "10px",
-                                                        "paddingLeft": "15px",
-                                                    },
-                                                ),
-                                            ],
-                                            style={"marginTop": "10px"},
-                                        ),
-                                    ]
-                                ),
-                            ],
-                            style={"height": "100%"},
-                        ),
-                        dcc.Checklist(
-                            id={"type": "empty-image-checkbox", "index": i + start_idx},
-                            options=[{"label": "", "value": "checked"}],
-                            value=["checked"],  # Set to checked by default
-                            style={
-                                "position": "absolute",
-                                "top": "10px",
-                                "left": "10px",
-                                "zIndex": "1",
-                            },
-                        ),
-                    ],
-                    style={"position": "relative"},
-                    id={
-                        "type": "empty-image-container",
-                        "index": i + start_idx,
-                    },
-                )
-                for i, (img, img_reasons) in enumerate(zip(paged_images, paged_reasons))
-                if os.path.exists(img[0])  # Only include images that still exist
-            ],
-        )
-
-        return (
+        cards.append(
             html.Div(
                 [
-                    html.H5(
-                        f"Displaying {(page-1)*20 + len(paged_images)} of {total_filtered} images matching the criteria",
-                        className="text-center mb-4",
+                    dbc.Card(
+                        [
+                            dbc.CardImg(
+                                src=encode_image(path),
+                                top=True,
+                                style={"height": "200px", "objectFit": "cover"},
+                                className="empty-image-hover",
+                            ),
+                            dbc.CardBody(
+                                [
+                                    html.Span(
+                                        rec["label"],
+                                        className=f"label-badge badge-{rec['label'].lower()}",
+                                    ),
+                                    html.H6(
+                                        os.path.basename(path),
+                                        className="card-title",
+                                        style={"fontSize": "12px"},
+                                    ),
+                                    html.P(
+                                        rec.get("reason", ""),
+                                        className="card-text",
+                                        style={"fontSize": "10px", "color": "#555"},
+                                    ),
+                                    html.P(
+                                        f"luma_median: {_fmt('luma_median')}",
+                                        className="card-text",
+                                        style={"fontSize": "11px"},
+                                    ),
+                                    html.P(
+                                        f"shadow_clip: {_fmt('shadow_clip')}",
+                                        className="card-text",
+                                        style={"fontSize": "11px"},
+                                    ),
+                                    html.P(
+                                        f"highlight_clip: {_fmt('highlight_clip')}",
+                                        className="card-text",
+                                        style={"fontSize": "11px"},
+                                    ),
+                                    html.P(
+                                        f"tenengrad_p90: {_fmt('tenengrad_p90')}",
+                                        className="card-text",
+                                        style={"fontSize": "11px"},
+                                    ),
+                                    html.P(
+                                        f"grad_energy: {_fmt('grad_energy')}",
+                                        className="card-text",
+                                        style={"fontSize": "11px"},
+                                    ),
+                                    html.P(
+                                        f"frangi_max: {_fmt('frangi_max')}",
+                                        className="card-text",
+                                        style={"fontSize": "11px"},
+                                    ),
+                                ]
+                            ),
+                        ],
+                        style={"height": "100%"},
                     ),
-                    image_grid,
-                ]
-            ),
-            total_pages,
+                    dcc.Checklist(
+                        id={"type": "empty-image-checkbox", "index": i + start},
+                        options=[{"label": "", "value": "checked"}],
+                        value=["checked"],  # Set to checked by default
+                        style={
+                            "position": "absolute",
+                            "top": "10px",
+                            "left": "10px",
+                            "zIndex": "1",
+                        },
+                    ),
+                ],
+                style={"position": "relative"},
+                id={"type": "empty-image-container", "index": i + start},
+            )
         )
 
-    except Exception as e:
-        print(f"Error in display_empty_images: {str(e)}")
-        import traceback
+    grid = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fill, minmax(250px, 1fr))",
+            "gap": "20px",
+            "padding": "20px",
+        },
+        children=cards,
+    )
 
-        print(traceback.format_exc())
-        return html.Div(f"An error occurred: {str(e)}", className="text-center mt-4"), 1
+    return (
+        html.Div(
+            [
+                html.H5(
+                    f"Displaying {len(paged)} of {total} flagged images",
+                    className="text-center mb-4",
+                ),
+                grid,
+            ]
+        ),
+        total_pages,
+    )
 
 
 # Add this clientside callback to handle image clicks for empty images
@@ -1331,154 +1323,36 @@ app.clientside_callback(
 
 
 @app.callback(
-    [
-        Output("empty-images-pagination", "active_page"),
-        Output("empty-images-pagination", "max_value", allow_duplicate=True),
-    ],
-    [
-        Input("empty-images-per-page", "value"),
-        Input("unique-color-threshold", "value"),
-        Input("color-variance-threshold", "value"),
-        Input("brightness-threshold-low", "value"),
-        Input("brightness-threshold-high", "value"),
-        Input("white-pixel-ratio-threshold", "value"),
-        Input("dark-pixel-ratio-threshold", "value"),
-        Input("bright-pixel-ratio-threshold", "value"),
-        Input("empty-images-store", "data"),
-    ],
+    Output("empty-images-pagination", "active_page"),
+    Input("empty-images-per-page", "value"),
+    Input("empty-sensitivity", "value"),
     prevent_initial_call=True,
 )
-def update_pagination_and_max_value(
-    items_per_page,
-    unique_color_threshold,
-    color_variance_threshold,
-    brightness_threshold_low,
-    brightness_threshold_high,
-    white_pixel_ratio_threshold,
-    dark_pixel_ratio_threshold,
-    bright_pixel_ratio_threshold,
-    empty_images,
-):
-    ctx = dash.callback_context
-    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-
-    if empty_images:
-        filtered_images = [
-            img
-            for img in empty_images
-            if (
-                img[1] < unique_color_threshold
-                or img[2] < color_variance_threshold
-                or (
-                    img[3] < brightness_threshold_low
-                    or img[3] > brightness_threshold_high
-                )
-                or (
-                    img[4] > white_pixel_ratio_threshold
-                    or img[5] > dark_pixel_ratio_threshold
-                    or img[6] > bright_pixel_ratio_threshold
-                )
-            )
-        ]
-        max_pages = max(
-            1, -(-len(filtered_images) // items_per_page)
-        )  # Ceiling division
-    else:
-        max_pages = 1
-
-    # Reset to page 1 if any input changes, except when empty_images_store changes
-    if trigger_id != "empty-images-store":
-        return 1, max_pages
-    else:
-        # If empty_images_store changed, just update max_pages
-        return dash.no_update, max_pages
+def reset_empty_page(items_per_page, sensitivity):
+    return 1
 
 
 @app.callback(
-    Output("empty-images-store", "data", allow_duplicate=True),
     Output("all-images-data", "data", allow_duplicate=True),
     Input("delete-empty-images", "n_clicks"),
     State("all-images-data", "data"),
-    State("empty-images-store", "data"),
+    State("empty-sensitivity", "value"),
     State({"type": "empty-image-checkbox", "index": ALL}, "value"),
     State("empty-images-pagination", "active_page"),
     State("empty-images-per-page", "value"),
-    State("unique-color-threshold", "value"),
-    State("color-variance-threshold", "value"),
-    State("brightness-threshold-low", "value"),
-    State("brightness-threshold-high", "value"),
-    State("white-pixel-ratio-threshold", "value"),
-    State("dark-pixel-ratio-threshold", "value"),
-    State("bright-pixel-ratio-threshold", "value"),
     prevent_initial_call=True,
 )
-def delete_selected_empty_images(
-    n_clicks,
-    all_images_data,
-    empty_images,
-    selected_images,
-    page,
-    items_per_page,
-    unique_color_threshold,
-    color_variance_threshold,
-    brightness_threshold_low,
-    brightness_threshold_high,
-    white_pixel_ratio_threshold,
-    dark_pixel_ratio_threshold,
-    bright_pixel_ratio_threshold,
-):
-    if n_clicks is None or not all_images_data:
+def delete_selected_empty_images(n_clicks, all_records, sensitivity, selected, page, items_per_page):
+    if not n_clicks or not all_records:
         raise dash.exceptions.PreventUpdate
-
-    # Filter images based on current criteria
-    filtered_images = []
-    for img in all_images_data:
-        (
-            image_path,
-            unique_colors,
-            color_variance,
-            brightness,
-            white_ratio,
-            dark_ratio,
-            bright_ratio,
-        ) = img
-        if (
-            unique_colors < unique_color_threshold
-            or color_variance < color_variance_threshold
-            or brightness < brightness_threshold_low
-            or brightness > brightness_threshold_high
-            or white_ratio > white_pixel_ratio_threshold
-            or dark_ratio > dark_pixel_ratio_threshold
-            or bright_ratio > bright_pixel_ratio_threshold
-        ):
-            filtered_images.append(img)
-
-    # Calculate indices for the current page
-    start_idx = (page - 1) * items_per_page
-    end_idx = start_idx + items_per_page
-    paged_images = filtered_images[start_idx:end_idx]
-
-    # Get indices of selected images on the current page
-    selected_indices = [
-        i for i, val in enumerate(selected_images) if val == ["checked"]
-    ]
-
-    # Get paths of images to delete
-    images_to_delete = [
-        paged_images[i][0] for i in selected_indices if i < len(paged_images)
-    ]
-
-    # Delete the selected images
-    deleted_images = delete_images(images_to_delete)
-
-    # Update all_images_data and empty_images
-    updated_all_images = [
-        img for img in all_images_data if img[0] not in deleted_images
-    ]
-    updated_empty_images = [img for img in empty_images if img[0] not in deleted_images]
-
-    return updated_empty_images, updated_all_images
+    flagged = _classified_empty_records(all_records, sensitivity or 0.0)
+    start = ((page or 1) - 1) * items_per_page
+    paged = flagged[start:start + items_per_page]
+    sel_idx = [i for i, v in enumerate(selected) if v == ["checked"]]
+    to_delete = [paged[i]["path"] for i in sel_idx if i < len(paged)]
+    deleted = delete_images(to_delete)
+    return [r for r in all_records if r["path"] not in deleted]
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run(debug=False)

@@ -8,3 +8,11 @@ plotly==5.22.0
 scipy==1.14.0
 tqdm==4.66.4
 numpy==1.26.3
+scikit-image==0.24.0
+# torch / torchvision are REQUIRED (GPU-first decode + metrics in image_metrics.py).
+# For nvJPEG GPU decode install the CUDA build matching your driver, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+# CPU-only wheels also work (everything falls back to threaded cv2 decode).
+# Verified on this machine: torch==2.11.0+cu130, torchvision==0.26.0+cu130 (CUDA 13.0).
+torch>=2.3
+torchvision>=0.18

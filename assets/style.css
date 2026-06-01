@@ -91,3 +91,11 @@
     left: 10px;
     z-index: 1000;
 }
+
+.label-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px;
+  font-weight:700; color:#fff; margin-bottom:6px; letter-spacing:.3px; }
+.badge-dark   { background:#34495e; }
+.badge-white  { background:#e67e22; }
+.badge-empty  { background:#7f8c8d; }
+.badge-blurry { background:#c0392b; }
+.badge-keep   { background:#27ae60; }
